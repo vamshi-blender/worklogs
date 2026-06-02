@@ -1,65 +1,182 @@
-import Image from "next/image";
+"use client";
+
+import { FormEvent, useMemo, useRef, useState } from "react";
+
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
 
 export default function Home() {
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      role: "assistant",
+      content:
+        "I am ready. Ask me something simple, then we can start adding browser-aware tools.",
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [error, setError] = useState("");
+  const formRef = useRef<HTMLFormElement>(null);
+
+  const visibleMessages = useMemo(
+    () => messages.filter((message) => message.content.trim().length > 0),
+    [messages],
+  );
+
+  async function submitMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const content = input.trim();
+    if (!content || isSending) {
+      return;
+    }
+
+    const nextMessages = [...messages, { role: "user" as const, content }];
+    setMessages(nextMessages);
+    setInput("");
+    setError("");
+    setIsSending(true);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: nextMessages.slice(-20),
+        }),
+      });
+      const data = (await response.json()) as { reply?: string; error?: string };
+
+      if (!response.ok || !data.reply) {
+        throw new Error(data.error ?? "The assistant did not return a reply.");
+      }
+
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", content: data.reply ?? "" },
+      ]);
+    } catch (caughtError) {
+      const message =
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Something went wrong.";
+
+      setError(message);
+    } finally {
+      setIsSending(false);
+      formRef.current?.querySelector("textarea")?.focus();
+    }
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <main className="min-h-dvh bg-[#f7f4ed] text-[#241f1a]">
+      <section className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-5 py-5 sm:px-8 lg:px-10">
+        <header className="flex items-center justify-between border-b border-[#241f1a]/15 py-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[#7b5b2d]">
+              Workupdate AI
+            </p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-normal sm:text-4xl">
+              Extension assistant lab
+            </h1>
+          </div>
+          <div className="hidden border-l border-[#241f1a]/15 pl-6 text-right text-sm text-[#6f665b] sm:block">
+            Agents SDK
+            <br />
+            Vercel backend
+          </div>
+        </header>
+
+        <div className="grid flex-1 gap-6 py-6 lg:grid-cols-[280px_1fr]">
+          <aside className="flex flex-col justify-between border-b border-[#241f1a]/15 pb-5 text-sm text-[#5f584f] lg:border-b-0 lg:border-r lg:pb-0 lg:pr-6">
+            <div className="space-y-5">
+              <p>Local operator surface for early assistant runs.</p>
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-1">
+                <StatusItem label="Backend" value="/api/chat" />
+                <StatusItem label="Model" value="OPENAI_MODEL" />
+                <StatusItem label="Runtime" value="Node route" />
+              </div>
+            </div>
+            <p className="mt-6 text-xs leading-5 text-[#81776b]">
+              Session history is replayed by the app for this first version.
+            </p>
+          </aside>
+
+          <div className="flex min-h-[640px] flex-col overflow-hidden border border-[#241f1a]/20 bg-[#fffaf0] shadow-[12px_12px_0_#241f1a]">
+            <div className="flex items-center justify-between border-b border-[#241f1a]/15 bg-[#efe4cf] px-4 py-3">
+              <span className="text-sm font-semibold">Chat preview</span>
+              <span className="h-2.5 w-2.5 bg-[#1f8f62]" aria-hidden="true" />
+            </div>
+
+            <div className="flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
+              {visibleMessages.map((message, index) => (
+                <article
+                  className={`max-w-[82%] border px-4 py-3 text-sm leading-6 ${
+                    message.role === "user"
+                      ? "ml-auto border-[#241f1a] bg-[#241f1a] text-[#fffaf0]"
+                      : "border-[#d6c9b7] bg-white text-[#241f1a]"
+                  }`}
+                  key={`${message.role}-${index}-${message.content.slice(0, 12)}`}
+                >
+                  {message.content}
+                </article>
+              ))}
+
+              {isSending ? (
+                <article className="w-fit border border-[#d6c9b7] bg-white px-4 py-3 text-sm text-[#6f665b]">
+                  Thinking...
+                </article>
+              ) : null}
+            </div>
+
+            {error ? (
+              <div className="border-t border-[#b65032]/25 bg-[#fff1e9] px-4 py-3 text-sm text-[#8f2f19]">
+                {error}
+              </div>
+            ) : null}
+
+            <form
+              ref={formRef}
+              onSubmit={submitMessage}
+              className="grid gap-3 border-t border-[#241f1a]/15 bg-[#efe4cf] p-4 sm:grid-cols-[1fr_auto]"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              <textarea
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                rows={2}
+                placeholder="Ask the first version of your assistant..."
+                className="max-h-40 min-h-14 resize-y border border-[#241f1a]/25 bg-[#fffaf0] px-4 py-3 text-sm leading-6 outline-none transition focus:border-[#241f1a]"
+              />
+              <button
+                type="submit"
+                disabled={isSending || !input.trim()}
+                className="h-14 border border-[#241f1a] bg-[#d95f2b] px-6 text-sm font-bold text-white transition hover:bg-[#bd4d20] disabled:cursor-not-allowed disabled:bg-[#c5b9a7] disabled:text-[#6f665b]"
+              >
+                Send
+              </button>
+            </form>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+      </section>
+    </main>
+  );
+}
+
+function StatusItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border border-[#241f1a]/15 bg-[#fffaf0] p-3">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#7b5b2d]">
+        {label}
+      </p>
+      <p className="mt-2 font-mono text-xs text-[#241f1a]">{value}</p>
     </div>
   );
 }

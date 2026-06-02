@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workupdate AI</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <p class="eyebrow">Workupdate AI</p>
+          <h1>Assistant</h1>
+        </div>
+        <button id="settingsButton" class="icon-button" title="Open settings" type="button">
+          Settings
+        </button>
+      </header>
+
+      <section id="messages" class="messages" aria-live="polite"></section>
+
+      <form id="chatForm" class="composer">
+        <textarea
+          id="messageInput"
+          aria-label="Message"
+          placeholder="Ask something..."
+          rows="2"
+        ></textarea>
+        <button id="sendButton" type="submit">Send</button>
+      </form>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

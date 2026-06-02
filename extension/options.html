@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workupdate AI Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <p class="eyebrow">Workupdate AI</p>
+      <h1>Backend settings</h1>
+      <form id="settingsForm">
+        <label for="backendUrl">Backend URL</label>
+        <input
+          id="backendUrl"
+          name="backendUrl"
+          type="url"
+          placeholder="http://localhost:3000"
+          required
+        />
+        <button type="submit">Save</button>
+      </form>
+      <p id="status" role="status"></p>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

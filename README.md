@@ -1,36 +1,65 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Workupdate AI
+
+This project is a starter AI application with:
+
+- A Next.js backend that can deploy to Vercel
+- An `/api/chat` route powered by the OpenAI Agents SDK
+- A local web chat tester
+- A Chrome extension popup that calls the same backend
 
 ## Getting Started
 
-First, run the development server:
+Create a local environment file:
+
+```bash
+cp .env.example .env.local
+```
+
+Set `OPENAI_API_KEY` in `.env.local`. `OPENAI_MODEL` defaults to `gpt-5.5`.
+
+Then run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) with your browser to test the backend through the web chat.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Chrome Extension
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. Run the backend locally with `npm run dev`.
+2. Open Chrome and go to `chrome://extensions`.
+3. Enable Developer mode.
+4. Choose **Load unpacked** and select the `extension` folder.
+5. Open the extension popup and chat.
 
-## Learn More
+The extension defaults to `http://localhost:3000`. Use the extension options page to switch the backend URL to your Vercel deployment later.
 
-To learn more about Next.js, take a look at the following resources:
+## API
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`POST /api/chat`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```json
+{
+  "messages": [{ "role": "user", "content": "Hello" }]
+}
+```
 
-## Deploy on Vercel
+Response:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```json
+{
+  "reply": "Hi! How can I help?"
+}
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The route uses application-managed transcript replay for this first simple chatbot. Future versions can add Agents SDK sessions, hosted tools, function tools, or page-context tools from the extension.
+
+## Deploy On Vercel
+
+Deploy the Next.js app to Vercel and set the same environment variables in the Vercel project settings:
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL` optional
+
+After deployment, open the extension options page and set the backend URL to the Vercel app URL.
