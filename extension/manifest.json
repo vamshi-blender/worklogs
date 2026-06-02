@@ -4,11 +4,16 @@
   "description": "A starter Chrome extension chatbot powered by a Vercel-hosted OpenAI Agents SDK backend.",
   "version": "0.1.0",
   "action": {
-    "default_title": "Workupdate AI",
-    "default_popup": "popup.html"
+    "default_title": "Workupdate AI"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "options_page": "options.html",
-  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage", "tabs"],
   "host_permissions": [
     "http://localhost:3000/*",
     "https://*.vercel.app/*",

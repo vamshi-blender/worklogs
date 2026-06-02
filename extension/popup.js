@@ -128,7 +128,9 @@ async function detectToken(options = {}) {
     quixyToken = result.accessToken;
     currentPmsViewId = result.viewId || "";
     await chrome.storage.session.set({ quixyAccessToken: quixyToken });
-    setTokenStatus(`Connected as ${result.email || "logged-in user"}`);
+
+    const currentUser = await fetchCurrentUserSummary(result);
+    setTokenStatus(`Connected as ${currentUser}`);
   } catch (error) {
     setTokenStatus(error instanceof Error ? error.message : "Token detection failed.");
   } finally {
@@ -254,7 +256,7 @@ function extractQuixyToken() {
   );
 
   if (!oidcKey) {
-    return { accessToken: "", email: "" };
+    return { accessToken: "", email: "", name: "", viewId: "" };
   }
 
   try {
@@ -262,10 +264,21 @@ function extractQuixyToken() {
     return {
       accessToken: session.access_token || "",
       email: session.profile?.EmailId || session.profile?.UserName || "",
+      name: session.profile?.Name || session.profile?.name || "",
       viewId: location.pathname.match(/\/views\/([^/?#]+)/)?.[1] || "",
     };
   } catch {
-    return { accessToken: "", email: "" };
+    return { accessToken: "", email: "", name: "", viewId: "" };
+  }
+}
+
+async function fetchCurrentUserSummary(tokenResult) {
+  try {
+    const user = await requestJson(`${API_ORIGIN}/api/User/GetUserDetails`);
+    const fullName = [user.FirstName, user.LastName].filter(Boolean).join(" ").trim();
+    return fullName || user.EmailId || tokenResult.name || tokenResult.email || "logged-in user";
+  } catch {
+    return tokenResult.name || tokenResult.email || "logged-in user";
   }
 }
 
