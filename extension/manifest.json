@@ -16,6 +16,7 @@
   "permissions": ["activeTab", "scripting", "sidePanel", "storage", "tabs"],
   "host_permissions": [
     "http://localhost:3000/*",
+    "https://worklogs-wheat.vercel.app/*",
     "https://*.vercel.app/*",
     "https://quixyhome.kwixee.co.in/*",
     "https://quixyhomeapi.kwixee.co.in/*"

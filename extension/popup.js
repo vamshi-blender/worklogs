@@ -1,4 +1,4 @@
-const DEFAULT_BACKEND_URL = "http://localhost:3000";
+const DEFAULT_BACKEND_URL = "https://worklogs-wheat.vercel.app";
 const API_ORIGIN = "https://quixyhomeapi.kwixee.co.in";
 const PMS_ORIGIN = "https://quixyhome.kwixee.co.in";
 const MANAGE_ISSUES_VIEW_ID = "05072022-184836479-5888ab5b-d645-4e86-a937-f2d02d2414c1";
@@ -6,12 +6,15 @@ const MY_ISSUES_VIEW_ID = "05072022-184841377-993a07eb-3b63-4ecf-acc8-49f5cf180f
 const WORKLOG_APP_ID = "07022021-220225896-25e3fa6f-ac18-4835-8437-f0f460b9062f";
 const WORKSPACE_ID = "03012021-192624661-c4d2d235-e371-4983-973f-c82b074f9b21";
 const ORGANIZATION_ID = "29102019-093434548-a4fe41b0-1fd0-489a-ac08-a29b98883143";
+const CHAT_MESSAGES_KEY = "workupdateChatMessages";
+const PENDING_WORKLOG_DRAFT_KEY = "workupdatePendingWorklogDraft";
 
 const messagesElement = document.querySelector("#messages");
 const form = document.querySelector("#chatForm");
 const input = document.querySelector("#messageInput");
 const sendButton = document.querySelector("#sendButton");
 const settingsButton = document.querySelector("#settingsButton");
+const newChatButton = document.querySelector("#newChatButton");
 const chatTab = document.querySelector("#chatTab");
 const worklogTab = document.querySelector("#worklogTab");
 const chatScreen = document.querySelector("#chatScreen");
@@ -23,20 +26,25 @@ const worklogDateInput = document.querySelector("#worklogDateInput");
 const worklogResult = document.querySelector("#worklogResult");
 const createWorklogButton = document.querySelector("#createWorklogButton");
 
-let quixyToken = "";
-let currentPmsViewId = "";
-
-const messages = [
+const defaultMessages = [
   {
     role: "assistant",
     content: "Ready. I am connected to the backend you configure in extension settings.",
   },
 ];
 
+let quixyToken = "";
+let currentPmsViewId = "";
+let messages = [...defaultMessages];
+let pendingWorklogDraft = null;
+let pmsLoginGate = null;
+let pmsLoginPollId = 0;
+
 settingsButton.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
 });
 
+newChatButton.addEventListener("click", startNewChat);
 chatTab.addEventListener("click", () => showScreen("chat"));
 worklogTab.addEventListener("click", () => showScreen("worklog"));
 detectTokenButton.addEventListener("click", detectToken);
@@ -51,30 +59,99 @@ form.addEventListener("submit", async (event) => {
   }
 
   messages.push({ role: "user", content });
+  await saveChatMessages();
   input.value = "";
+
+  if (pendingWorklogDraft && isConfirmWorklogCommand(content)) {
+    const hasToken = await detectToken({ quiet: true, openIfMissing: false });
+
+    if (!hasToken) {
+      await startPmsLoginGate();
+      await saveChatMessages();
+      return;
+    }
+
+    renderMessages("Creating worklog...");
+    setChatBusy(true);
+
+    try {
+      await createWorklogFromAiDraft(pendingWorklogDraft);
+      pendingWorklogDraft = null;
+      await savePendingWorklogDraft();
+      renderMessages();
+    } catch {
+      renderMessages();
+    } finally {
+      setChatBusy(false);
+      input.focus();
+    }
+
+    return;
+  }
+
+  if (pendingWorklogDraft) {
+    pendingWorklogDraft = null;
+    await savePendingWorklogDraft();
+  }
+
   renderMessages("Thinking...");
   setChatBusy(true);
+  let assistantMessageIndex = -1;
 
   try {
     const backendUrl = await getBackendUrl();
     const response = await fetch(`${backendUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: messages.slice(-20) }),
+      body: JSON.stringify({
+        messages: getRecentChatMessages(),
+        currentDate: getLocalDate(),
+        timeZone: getLocalTimeZone(),
+      }),
     });
-    const data = await response.json();
 
-    if (!response.ok || !data.reply) {
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
       throw new Error(data.error || "The backend did not return a reply.");
     }
 
-    messages.push({ role: "assistant", content: data.reply });
+    assistantMessageIndex = messages.push({
+      role: "assistant",
+      content: "",
+    }) - 1;
+    renderMessages();
+
+    const result = await readChatStream(response, (delta) => {
+      messages[assistantMessageIndex].content += delta;
+      renderMessages();
+    });
+
+    if (result.reply && !messages[assistantMessageIndex].content.trim()) {
+      messages[assistantMessageIndex].content = result.reply;
+    }
+
+    if (result.worklogDraft) {
+      pendingWorklogDraft = result.worklogDraft;
+      await savePendingWorklogDraft();
+      await saveChatMessages();
+      await preparePmsSessionForDraft();
+    } else {
+      await saveChatMessages();
+    }
     renderMessages();
   } catch (error) {
+    if (
+      assistantMessageIndex >= 0 &&
+      messages[assistantMessageIndex]?.content.trim() === ""
+    ) {
+      messages.splice(assistantMessageIndex, 1);
+    }
+
     messages.push({
       role: "assistant",
       content: error instanceof Error ? error.message : "Something went wrong.",
     });
+    await saveChatMessages();
     renderMessages();
   } finally {
     setChatBusy(false);
@@ -97,8 +174,105 @@ function showScreen(screen) {
   worklogScreen.classList.toggle("active", !isChat);
 }
 
+async function preparePmsSessionForDraft() {
+  const hasToken = await detectToken({ quiet: true, openIfMissing: false });
+
+  if (hasToken) {
+    clearPmsLoginGate();
+    return;
+  }
+
+  await startPmsLoginGate();
+}
+
+async function startPmsLoginGate() {
+  pmsLoginGate = {
+    status: "opening",
+    text: "Opening PMS so I can read your login session.",
+  };
+  renderMessages();
+  await openOrFocusPms();
+
+  pmsLoginGate = {
+    status: "waiting",
+    text: "Waiting for PMS login. Complete login in the PMS tab.",
+  };
+  renderMessages();
+  startPmsLoginPolling();
+}
+
+function startPmsLoginPolling() {
+  stopPmsLoginPolling();
+  pmsLoginPollId = window.setInterval(async () => {
+    const hasToken = await detectToken({ quiet: true, openIfMissing: false });
+
+    if (!hasToken) {
+      return;
+    }
+
+    stopPmsLoginPolling();
+    pmsLoginGate = {
+      status: "ready",
+      text: "PMS session detected. Continue to save the reviewed worklog.",
+    };
+    renderMessages();
+  }, 3000);
+}
+
+function stopPmsLoginPolling() {
+  if (pmsLoginPollId) {
+    window.clearInterval(pmsLoginPollId);
+    pmsLoginPollId = 0;
+  }
+}
+
+function clearPmsLoginGate() {
+  stopPmsLoginPolling();
+  pmsLoginGate = null;
+  renderMessages();
+}
+
+async function openOrFocusPms() {
+  const tab = await getQuixyTab();
+
+  if (tab?.id) {
+    await chrome.tabs.update(tab.id, { active: true });
+
+    if (tab.windowId) {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+
+    return;
+  }
+
+  await chrome.tabs.create({ url: PMS_ORIGIN });
+}
+
+async function continueAfterPmsLogin() {
+  if (!pendingWorklogDraft || pmsLoginGate?.status !== "ready") {
+    return;
+  }
+
+  clearPmsLoginGate();
+  renderMessages("Creating worklog...");
+  setChatBusy(true);
+
+  try {
+    await createWorklogFromAiDraft(pendingWorklogDraft);
+    pendingWorklogDraft = null;
+    await savePendingWorklogDraft();
+    renderMessages();
+  } catch {
+    renderMessages();
+  } finally {
+    setChatBusy(false);
+    input.focus();
+  }
+}
+
 async function detectToken(options = {}) {
   const quiet = Boolean(options.quiet);
+  const openIfMissing = options.openIfMissing !== false;
 
   if (!quiet) {
     setTokenStatus("Checking active PMS tab...");
@@ -110,9 +284,13 @@ async function detectToken(options = {}) {
     const tab = await getQuixyTab();
 
     if (!tab) {
-      await chrome.tabs.create({ url: PMS_ORIGIN });
-      setTokenStatus("PMS opened. Login there, then click Detect again.");
-      return;
+      if (openIfMissing) {
+        await chrome.tabs.create({ url: PMS_ORIGIN });
+        setTokenStatus("PMS opened. Login there, then click Detect again.");
+      } else {
+        setTokenStatus("PMS is not open.");
+      }
+      return false;
     }
 
     const [{ result }] = await chrome.scripting.executeScript({
@@ -122,7 +300,7 @@ async function detectToken(options = {}) {
 
     if (!result?.accessToken) {
       setTokenStatus("No login token found. Login in PMS, then click Detect again.");
-      return;
+      return false;
     }
 
     quixyToken = result.accessToken;
@@ -131,8 +309,10 @@ async function detectToken(options = {}) {
 
     const currentUser = await fetchCurrentUserSummary(result);
     setTokenStatus(`Connected as ${currentUser}`);
+    return true;
   } catch (error) {
     setTokenStatus(error instanceof Error ? error.message : "Token detection failed.");
+    return false;
   } finally {
     detectTokenButton.disabled = false;
   }
@@ -144,99 +324,246 @@ async function createWorklog(event) {
   worklogResult.textContent = "Preparing worklog...";
 
   try {
-    await detectToken({ quiet: true });
-
-    if (!quixyToken) {
-      throw new Error("Login token is not available yet.");
-    }
-
     const formData = new FormData(worklogForm);
-    const issueId = String(formData.get("issueId")).trim();
-    const logDate = toApiDate(String(formData.get("worklogDate")));
-    const hoursValue = String(formData.get("hours")).trim();
-    const { hours, minutes } = splitHours(hoursValue);
-    const issue = await fetchIssueDetails(issueId);
-    const user = await requestJson(`${API_ORIGIN}/api/User/GetUserDetails`);
-    const employee = await fetchEmployeeDetails(user.EmailId);
-    const nextWorkingDate = toApiDate(addDays(String(formData.get("worklogDate")), 1));
-    const now = new Date();
-
-    const payload = {
-      "var Project Id": asString(issue["Project Id"]),
-      "var Issue Record Id": asString(issue["Record Id"]),
-      "var Issue Id": asString(issue["Issue Id"]),
-      "var Issue Type": asString(issue["Issue Type"]),
-      "var Current Assignee": asString(issue.Assignee),
-      "var Summary": asString(issue.Summary),
-      Action: "Add Worklog",
-      "var Logged In User": user.EmailId,
-      "Log Date": logDate,
-      "Current Date": logDate,
-      Category: String(formData.get("category")).trim(),
-      "Log Hours": hoursValue,
-      Hours: String(hours),
-      Minutes: minutes,
-      "Billable Hours": hoursValue,
-      "Next Working Date": nextWorkingDate,
-      "Current Time": formatDateTime(now),
-      "Cut Off Time": "2022-12-28T05:30:00.00",
-      "Is On Time": "Yes",
-      "Worklog Late Entry Notification": "",
-      "var Log Efforts": hoursValue,
-      "Log Hours Instructions": "",
-      "Log Description": String(formData.get("description")).trim(),
-      "var Worklog Date": logDate,
-      "var Worklog Email Id": null,
-      "Issue Id watchers": null,
-      Department: employee.Department || "",
-      "Official Email Id": employee["Official Email Id"] || user.EmailId,
-      Report: "",
-      "Watchers List": [],
-      "Worklog Date Grid": [],
-      _AppId: WORKLOG_APP_ID,
-      _AppName: "Worklog",
-      _CurrentStepNumber: 1,
-      _WorkSpaceId: WORKSPACE_ID,
-      _OrganizationId: ORGANIZATION_ID,
-      _NextGroupName: "Done",
-      _IsCompleted: true,
-      _ExternalApiIds: "",
-      _InternalApiIds: "",
-      _DataFunctionIds: "",
-      _UserFunctionIds: "",
-      _UserId: user.UserId,
-      _Username: user.EmailId,
-      _FullName: [user.FirstName, user.LastName].filter(Boolean).join(" "),
-      _UpdatedUserId: "",
-      _UpdatedUsername: "",
-      _UpdatedEmailId: "",
-      _UserEmailId: user.EmailId,
-      _CreatedLocation: "",
-      _NextStepUsers: "",
-      _UpdatedLocation: "",
-      _WorkFlowAction: "Start - Submit",
-    };
-
-    worklogResult.textContent = "Saving worklog...";
-    const saved = await requestJson(
-      `${API_ORIGIN}/api/App/SaveAppData?appName=Worklog&users=&startDate=null&dueDate=null`,
-      {
-        method: "POST",
-        body: JSON.stringify(payload),
+    const saved = await saveWorklog({
+      issueId: String(formData.get("issueId")).trim(),
+      worklogDate: String(formData.get("worklogDate")),
+      hours: String(formData.get("hours")).trim(),
+      category: String(formData.get("category")).trim(),
+      description: String(formData.get("description")).trim(),
+      onStatus(status) {
+        worklogResult.textContent = status;
       },
-    );
+    });
 
-    if (!saved.Success) {
-      throw new Error(saved.ErrorMessage || "Worklog save failed.");
-    }
-
-    worklogResult.textContent = `Created worklog for ${issueId}\nRecord: ${saved.Data}`;
+    worklogResult.textContent = `Created worklog for ${saved.issueId}\nRecord: ${saved.recordId}`;
   } catch (error) {
     worklogResult.textContent =
       error instanceof Error ? error.message : "Worklog creation failed.";
   } finally {
     createWorklogButton.disabled = false;
   }
+}
+
+async function createWorklogFromAiDraft(draft) {
+  messages.push({
+    role: "assistant",
+    content: `Creating worklog for ${draft.issueId}...`,
+  });
+  await saveChatMessages();
+  renderMessages();
+
+  try {
+    const saved = await saveWorklog({
+      issueId: draft.issueId,
+      worklogDate: draft.worklogDate,
+      hours: String(draft.hours),
+      category: draft.category,
+      description: draft.description,
+      onStatus(status) {
+        messages[messages.length - 1] = {
+          role: "assistant",
+          content: status,
+        };
+        renderMessages();
+      },
+    });
+
+    messages[messages.length - 1] = {
+      role: "assistant",
+      content: `Worklog created for ${saved.issueId}. Record: ${saved.recordId}`,
+    };
+    await saveChatMessages();
+  } catch (error) {
+    messages[messages.length - 1] = {
+      role: "assistant",
+      content:
+        error instanceof Error
+          ? `I could not create the worklog: ${error.message}`
+          : "I could not create the worklog.",
+    };
+    await saveChatMessages();
+    throw error;
+  }
+}
+
+async function readChatStream(response, onDelta) {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!contentType.includes("text/event-stream")) {
+    return response.json();
+  }
+
+  const reader = response.body?.getReader();
+
+  if (!reader) {
+    const data = await response.json();
+    return data;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let rawText = "";
+  let result = { reply: "", worklogDraft: null };
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      break;
+    }
+
+    const text = decoder.decode(value, { stream: true });
+    rawText += text;
+    buffer += text;
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+
+    for (const event of events) {
+      const parsed = parseServerSentEvent(event);
+
+      if (!parsed) {
+        continue;
+      }
+
+      if (parsed.type === "delta") {
+        onDelta(String(parsed.value || ""));
+      } else if (parsed.type === "done") {
+        result = {
+          reply: String(parsed.reply || ""),
+          worklogDraft: parsed.worklogDraft || null,
+        };
+      } else if (parsed.type === "error") {
+        throw new Error(parsed.error || "The backend stream failed.");
+      }
+    }
+  }
+
+  rawText += decoder.decode();
+
+  if (buffer.trim()) {
+    const parsed = parseServerSentEvent(buffer);
+
+    if (parsed?.type === "done") {
+      result = {
+        reply: String(parsed.reply || ""),
+        worklogDraft: parsed.worklogDraft || null,
+      };
+    } else if (parsed?.type === "error") {
+      throw new Error(parsed.error || "The backend stream failed.");
+    }
+  }
+
+  if (!result.reply && !result.worklogDraft && rawText.trim().startsWith("{")) {
+    return JSON.parse(rawText);
+  }
+
+  return result;
+}
+
+function parseServerSentEvent(event) {
+  const data = event
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+
+  if (!data) {
+    return null;
+  }
+
+  return JSON.parse(data);
+}
+
+async function saveWorklog({ issueId, worklogDate, hours, category, description, onStatus }) {
+  onStatus("Preparing worklog...");
+  await detectToken({ quiet: true });
+
+  if (!quixyToken) {
+    throw new Error("Login token is not available yet.");
+  }
+
+  const logDate = toApiDate(worklogDate);
+  const { hours: wholeHours, minutes } = splitHours(hours);
+  const issue = await fetchIssueDetails(issueId);
+  const user = await requestJson(`${API_ORIGIN}/api/User/GetUserDetails`);
+  const employee = await fetchEmployeeDetails(user.EmailId);
+  const nextWorkingDate = toApiDate(addDays(worklogDate, 1));
+  const now = new Date();
+
+  const payload = {
+    "var Project Id": asString(issue["Project Id"]),
+    "var Issue Record Id": asString(issue["Record Id"]),
+    "var Issue Id": asString(issue["Issue Id"]),
+    "var Issue Type": asString(issue["Issue Type"]),
+    "var Current Assignee": asString(issue.Assignee),
+    "var Summary": asString(issue.Summary),
+    Action: "Add Worklog",
+    "var Logged In User": user.EmailId,
+    "Log Date": logDate,
+    "Current Date": logDate,
+    Category: category,
+    "Log Hours": hours,
+    Hours: String(wholeHours),
+    Minutes: minutes,
+    "Billable Hours": hours,
+    "Next Working Date": nextWorkingDate,
+    "Current Time": formatDateTime(now),
+    "Cut Off Time": "2022-12-28T05:30:00.00",
+    "Is On Time": "Yes",
+    "Worklog Late Entry Notification": "",
+    "var Log Efforts": hours,
+    "Log Hours Instructions": "",
+    "Log Description": description,
+    "var Worklog Date": logDate,
+    "var Worklog Email Id": null,
+    "Issue Id watchers": null,
+    Department: employee.Department || "",
+    "Official Email Id": employee["Official Email Id"] || user.EmailId,
+    Report: "",
+    "Watchers List": [],
+    "Worklog Date Grid": [],
+    _AppId: WORKLOG_APP_ID,
+    _AppName: "Worklog",
+    _CurrentStepNumber: 1,
+    _WorkSpaceId: WORKSPACE_ID,
+    _OrganizationId: ORGANIZATION_ID,
+    _NextGroupName: "Done",
+    _IsCompleted: true,
+    _ExternalApiIds: "",
+    _InternalApiIds: "",
+    _DataFunctionIds: "",
+    _UserFunctionIds: "",
+    _UserId: user.UserId,
+    _Username: user.EmailId,
+    _FullName: [user.FirstName, user.LastName].filter(Boolean).join(" "),
+    _UpdatedUserId: "",
+    _UpdatedUsername: "",
+    _UpdatedEmailId: "",
+    _UserEmailId: user.EmailId,
+    _CreatedLocation: "",
+    _NextStepUsers: "",
+    _UpdatedLocation: "",
+    _WorkFlowAction: "Start - Submit",
+  };
+
+  onStatus("Saving worklog...");
+  const saved = await requestJson(
+    `${API_ORIGIN}/api/App/SaveAppData?appName=Worklog&users=&startDate=null&dueDate=null`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+
+  if (!saved.Success) {
+    throw new Error(saved.ErrorMessage || "Worklog save failed.");
+  }
+
+  return {
+    issueId,
+    recordId: saved.Data,
+  };
 }
 
 async function getQuixyTab() {
@@ -370,12 +697,12 @@ function issueFilter(issueId) {
     Order: 0,
     ColumnName: "Issue Id",
     ElementType: "TextBox",
-    ConditionType: "Contains",
+    ConditionType: "Equal",
     Value: issueId,
     IsEditable: true,
     IsVisible: false,
     SecondValue: "",
-    SelectedValues: [""],
+    SelectedValues: [issueId],
   };
 }
 
@@ -431,11 +758,15 @@ async function requestJson(url, options = {}) {
 function renderMessages(statusText = "") {
   messagesElement.innerHTML = "";
 
-  for (const message of messages) {
+  for (const message of normalizeChatMessages(messages)) {
     const bubble = document.createElement("article");
     bubble.className = `message ${message.role}`;
     bubble.textContent = message.content;
     messagesElement.appendChild(bubble);
+  }
+
+  if (pmsLoginGate) {
+    messagesElement.appendChild(createPmsLoginGateElement());
   }
 
   if (statusText) {
@@ -446,6 +777,116 @@ function renderMessages(statusText = "") {
   }
 
   messagesElement.scrollTop = messagesElement.scrollHeight;
+}
+
+function createPmsLoginGateElement() {
+  const card = document.createElement("section");
+  card.className = "pms-login-gate";
+
+  const label = document.createElement("p");
+  label.className = "pms-login-gate-label";
+  label.textContent = "PMS session";
+
+  const text = document.createElement("p");
+  text.className = "pms-login-gate-text";
+  text.textContent = pmsLoginGate.text;
+
+  const button = document.createElement("button");
+  button.className = "pms-login-gate-button";
+  button.type = "button";
+
+  if (pmsLoginGate.status === "ready") {
+    button.textContent = "Continue";
+    button.disabled = false;
+    button.addEventListener("click", continueAfterPmsLogin);
+  } else if (pmsLoginGate.status === "opening") {
+    button.textContent = "Login PMS";
+    button.disabled = false;
+    button.addEventListener("click", openOrFocusPms);
+  } else {
+    button.textContent = "Waiting for login";
+    button.disabled = true;
+  }
+
+  card.append(label, text, button);
+  return card;
+}
+
+async function loadChatMessages() {
+  const stored = await chrome.storage.local.get([
+    CHAT_MESSAGES_KEY,
+    PENDING_WORKLOG_DRAFT_KEY,
+  ]);
+  const storedMessages = stored[CHAT_MESSAGES_KEY];
+  const storedDraft = stored[PENDING_WORKLOG_DRAFT_KEY];
+
+  if (Array.isArray(storedMessages) && storedMessages.length > 0) {
+    messages = normalizeChatMessages(storedMessages);
+  }
+
+  if (messages.length === 0) {
+    messages = [...defaultMessages];
+  }
+
+  if (storedDraft && typeof storedDraft === "object") {
+    pendingWorklogDraft = storedDraft;
+  }
+}
+
+async function saveChatMessages() {
+  await chrome.storage.local.set({
+    [CHAT_MESSAGES_KEY]: normalizeChatMessages(messages).slice(-50),
+  });
+}
+
+async function startNewChat() {
+  messages = [...defaultMessages];
+  pendingWorklogDraft = null;
+  clearPmsLoginGate();
+  await chrome.storage.local.remove([CHAT_MESSAGES_KEY, PENDING_WORKLOG_DRAFT_KEY]);
+  renderMessages();
+  showScreen("chat");
+  input.focus();
+}
+
+async function savePendingWorklogDraft() {
+  if (pendingWorklogDraft) {
+    await chrome.storage.local.set({
+      [PENDING_WORKLOG_DRAFT_KEY]: pendingWorklogDraft,
+    });
+    return;
+  }
+
+  await chrome.storage.local.remove(PENDING_WORKLOG_DRAFT_KEY);
+}
+
+function isConfirmWorklogCommand(content) {
+  return /^(yes|y|confirm|create|submit|save|looks good|go ahead|proceed)$/i.test(
+    content.trim(),
+  );
+}
+
+function getLocalDate() {
+  const date = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function getLocalTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Calcutta";
+}
+
+function getRecentChatMessages() {
+  return normalizeChatMessages(messages).slice(-20);
+}
+
+function normalizeChatMessages(candidateMessages) {
+  return candidateMessages.filter(
+    (message) =>
+      (message.role === "user" || message.role === "assistant") &&
+      typeof message.content === "string" &&
+      message.content.trim().length > 0,
+  );
 }
 
 function setChatBusy(isBusy) {
@@ -501,4 +942,4 @@ function setDefaultDate() {
 }
 
 setDefaultDate();
-renderMessages();
+loadChatMessages().then(renderMessages);

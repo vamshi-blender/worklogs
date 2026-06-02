@@ -40,6 +40,11 @@ textarea {
   padding: 14px;
 }
 
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -131,6 +136,48 @@ h1 {
 
 .message.status {
   width: fit-content;
+  color: var(--muted);
+}
+
+.pms-login-gate {
+  display: grid;
+  align-self: stretch;
+  gap: 8px;
+  border: 1px solid var(--ink);
+  background: #fffdf8;
+  padding: 12px;
+}
+
+.pms-login-gate-label {
+  margin: 0;
+  color: #7b5b2d;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.pms-login-gate-text {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.pms-login-gate-button {
+  justify-self: start;
+  border: 1px solid var(--ink);
+  background: var(--accent);
+  color: white;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 9px 12px;
+}
+
+.pms-login-gate-button:disabled {
+  cursor: not-allowed;
+  background: #c5b9a7;
   color: var(--muted);
 }
 

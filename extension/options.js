@@ -1,4 +1,4 @@
-const DEFAULT_BACKEND_URL = "http://localhost:3000";
+const DEFAULT_BACKEND_URL = "https://worklogs-wheat.vercel.app";
 const form = document.querySelector("#settingsForm");
 const backendUrlInput = document.querySelector("#backendUrl");
 const statusElement = document.querySelector("#status");
