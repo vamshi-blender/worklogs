@@ -18,17 +18,77 @@
         </button>
       </header>
 
-      <section id="messages" class="messages" aria-live="polite"></section>
+      <nav class="tabs" aria-label="Extension screens">
+        <button id="chatTab" class="tab active" type="button">Chat</button>
+        <button id="worklogTab" class="tab" type="button">Worklog</button>
+      </nav>
 
-      <form id="chatForm" class="composer">
-        <textarea
-          id="messageInput"
-          aria-label="Message"
-          placeholder="Ask something..."
-          rows="2"
-        ></textarea>
-        <button id="sendButton" type="submit">Send</button>
-      </form>
+      <section id="chatScreen" class="screen active">
+        <section id="messages" class="messages" aria-live="polite"></section>
+
+        <form id="chatForm" class="composer">
+          <textarea
+            id="messageInput"
+            aria-label="Message"
+            placeholder="Ask something..."
+            rows="2"
+          ></textarea>
+          <button id="sendButton" type="submit">Send</button>
+        </form>
+      </section>
+
+      <section id="worklogScreen" class="screen worklog-screen">
+        <div class="token-panel">
+          <div>
+            <p class="label">PMS session</p>
+            <p id="tokenStatus" class="status-text">Not checked</p>
+          </div>
+          <button id="detectTokenButton" class="secondary-button" type="button">
+            Detect
+          </button>
+        </div>
+
+        <form id="worklogForm" class="worklog-form">
+          <label>
+            Issue ID
+            <input id="issueIdInput" name="issueId" value="QKA-49715" required />
+          </label>
+          <div class="field-grid">
+            <label>
+              Worklog date
+              <input id="worklogDateInput" name="worklogDate" type="date" required />
+            </label>
+            <label>
+              Hours
+              <input
+                id="hoursInput"
+                name="hours"
+                type="number"
+                min="0.25"
+                step="0.25"
+                value="0.25"
+                required
+              />
+            </label>
+          </div>
+          <label>
+            Category
+            <input id="categoryInput" name="category" value="API Testing" required />
+          </label>
+          <label>
+            Description
+            <textarea
+              id="descriptionInput"
+              name="description"
+              rows="4"
+              required
+            >manual API extension test - ignore</textarea>
+          </label>
+          <button id="createWorklogButton" type="submit">Create Worklog</button>
+        </form>
+
+        <section id="worklogResult" class="worklog-result" aria-live="polite"></section>
+      </section>
     </main>
 
     <script src="popup.js"></script>

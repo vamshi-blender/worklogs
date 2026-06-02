@@ -8,6 +8,11 @@
     "default_popup": "popup.html"
   },
   "options_page": "options.html",
-  "permissions": ["storage"],
-  "host_permissions": ["http://localhost:3000/*", "https://*.vercel.app/*"]
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "host_permissions": [
+    "http://localhost:3000/*",
+    "https://*.vercel.app/*",
+    "https://quixyhome.kwixee.co.in/*",
+    "https://quixyhomeapi.kwixee.co.in/*"
+  ]
 }
