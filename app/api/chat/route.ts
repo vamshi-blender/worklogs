@@ -221,10 +221,6 @@ const worklogDraftSchema = z.object({
   description: z.string().trim().min(1).max(2000),
 });
 
-const worklogDraftsSchema = z.object({
-  drafts: z.array(worklogDraftSchema).min(1).max(10),
-});
-
 type WorklogDraft = z.infer<typeof worklogDraftSchema>;
 
 const corsHeaders = {
@@ -238,8 +234,8 @@ const chatAgent = new Agent({
   model: process.env.OPENAI_MODEL ?? "gpt-5.5",
   instructions: [
     "You are Workupdate Assistant, a concise helper inside a Chrome side panel.",
-    "You help users chat normally, inspect the selected Excel workbook when needed, read focused Excel sheet/range data when needed, and prepare PMS worklogs when requested.",
-    "You have four tools: get_excel_metadata for workbook/sheet names and boundaries, get_range_as_csv for a precise A1 range as CSV, prepare_worklog for one reviewed PMS worklog draft, and prepare_worklogs for multiple reviewed PMS worklog drafts. Choose the necessary tool or tools based on the user's request.",
+    "You help users chat normally, inspect the selected Excel workbook when needed, read focused Excel sheet/range data when needed, and create PMS worklogs after human review and approval.",
+    "You have three active tools: get_excel_metadata for workbook/sheet names and boundaries, get_range_as_csv for a precise A1 range as CSV, and create_worklog for one approved PMS worklog action. Choose the necessary active tool or tools based on the user's request.",
     "When the user asks to raise, create, submit, add, or log a worklog, collect exactly these required values: issue id, worklog date, hours, category, and log description.",
     "Preserve the issue id exactly as the user provides it, except for uppercasing letters. Never change or guess the project prefix, for example do not convert QXY to QKA.",
     `Choose category only from this exact allowed list: ${worklogCategories.join(", ")}.`,
@@ -249,8 +245,10 @@ const chatAgent = new Agent({
     "Do not fabricate unrelated details. If the issue id, date, hours, or enough work context to choose a category/description is missing or genuinely ambiguous, ask a short follow-up question for only the missing values.",
     "Resolve relative dates such as today, yesterday, and tomorrow using the Current date context in the prompt. Always pass worklogDate as YYYY-MM-DD.",
     "Accept hours as a positive decimal number. If the user gives hours and minutes, convert them to decimal hours.",
-    "When all required values are present for one worklog, call prepare_worklog. When the user asks to create multiple distinct worklogs in one go, call prepare_worklogs once with all drafts, or call prepare_worklog once per draft. The tools prepare only the minimal draft values; they do not know PMS metadata and do not use PMS tokens.",
-    "After preparing draft(s), respond with the exact details that will be used: issue id, worklog date, hours, category, and log description. For multiple drafts, show each draft clearly. Ask the user to reply Create, Confirm, or Yes to save them. Do not claim anything has been saved unless the extension later confirms that.",
+    "Do not call create_worklog immediately after first deriving worklog details. First present the exact details for human review: issue id, worklog date, hours, category, and log description. Ask the user to approve or request changes in natural language.",
+    "Call create_worklog only when the latest user message clearly approves the reviewed details from the conversation. The user may approve naturally, for example by saying it looks good, go ahead, log these, proceed, approved, or equivalent wording. Do not require exact approval words.",
+    "For multiple approved worklogs, call create_worklog separately once for each worklog. Do not use a batch worklog tool. You may call create_worklog multiple times in one turn when all items have already been reviewed and approved.",
+    "The create_worklog tool triggers the Chrome extension to execute the PMS API locally with the user's PMS session. The tool itself receives only the minimal action payload: issue id, worklog date, hours, category, and log description. It must not include PMS metadata such as project id, issue record id, assignee, user id, department, bearer token, or workflow fields.",
     "When the user's request requires information from the selected Excel workbook, first call get_excel_metadata unless the correct sheet name and range are already known from the current conversation. Then call get_range_as_csv with the precise sheetName and A1 range needed for the answer. Use only tool output for Excel facts. If a tool says data is truncated, clearly say that your answer is based on the included range only and ask for a narrower range when needed.",
     "Keep answers concise unless the user asks for detail.",
   ].join(" "),
@@ -300,7 +298,7 @@ export async function POST(request: Request) {
     excelAccessStatus: excelAccess?.status || "",
     excelAccessMessage: excelAccess?.message || "",
   });
-  const worklogDrafts: WorklogDraft[] = [];
+  const worklogActions: WorklogDraft[] = [];
   let debugEventId = 0;
   let sendToolDebug:
     | ((event: {
@@ -360,40 +358,20 @@ export async function POST(request: Request) {
     });
   }
 
-  const prepareWorklog = tool({
-    name: "prepare_worklog",
+  const createWorklog = tool({
+    name: "create_worklog",
     description:
-      "Prepare the minimal values needed by the browser extension to create a PMS worklog. Use this only after the user has provided issue id, worklog date, hours, category, and log description. The category must be one exact value from the allowed PMS category enum. Preserve the user's issue id prefix exactly, only uppercasing letters if needed. This tool does not save the worklog and must not include PMS metadata such as project id, issue record id, assignee, user id, department, bearer token, or workflow fields.",
+      "Trigger the Chrome extension to create one PMS worklog after the human has reviewed and approved the exact details in the chat. Use this only when the latest user message clearly approves the reviewed worklog details. The category must be one exact value from the allowed PMS category enum. Preserve the user's issue id prefix exactly, only uppercasing letters if needed. This tool queues the action for the extension to execute locally with the user's PMS session; it must not include PMS metadata such as project id, issue record id, assignee, user id, department, bearer token, or workflow fields.",
     parameters: worklogDraftSchema,
     async execute(input) {
-      return executeWithToolDebug("prepare_worklog", input, () => {
-        worklogDrafts.push(input);
+      return executeWithToolDebug("create_worklog", input, () => {
+        worklogActions.push(input);
 
         return {
-          status: "draft_ready",
-          draft: input,
+          status: "queued_for_extension_execution",
+          action: input,
           nextStep:
-            "The extension should keep this draft pending for user review and creation.",
-        };
-      });
-    },
-  });
-
-  const prepareWorklogs = tool({
-    name: "prepare_worklogs",
-    description:
-      "Prepare multiple PMS worklog drafts in one reviewed batch. Use this after the user has provided all required values for each worklog: issue id, worklog date, hours, category, and log description. Each category must be one exact value from the allowed PMS category enum. Preserve each issue id prefix exactly, only uppercasing letters if needed. This tool does not save worklogs and must not include PMS metadata such as project id, issue record id, assignee, user id, department, bearer token, or workflow fields.",
-    parameters: worklogDraftsSchema,
-    async execute(input) {
-      return executeWithToolDebug("prepare_worklogs", input, () => {
-        worklogDrafts.push(...input.drafts);
-
-        return {
-          status: "drafts_ready",
-          drafts: input.drafts,
-          count: input.drafts.length,
-          nextStep:
-            "The extension should keep these drafts pending for user review and batch creation.",
+            "The extension should execute this PMS worklog action locally using the user's PMS session.",
         };
       });
     },
@@ -401,8 +379,7 @@ export async function POST(request: Request) {
 
   const agent = chatAgent.clone({
     tools: [
-      prepareWorklog,
-      prepareWorklogs,
+      createWorklog,
       tool({
         name: "get_excel_metadata",
         description:
@@ -521,8 +498,8 @@ export async function POST(request: Request) {
               (typeof result.finalOutput === "string"
                 ? result.finalOutput
                 : JSON.stringify(result.finalOutput)),
-            worklogDraft: worklogDrafts[0] || null,
-            worklogDrafts,
+            worklogAction: worklogActions[0] || null,
+            worklogActions,
           });
         } catch (error) {
           send({

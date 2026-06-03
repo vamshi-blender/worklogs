@@ -12,7 +12,7 @@ const WORKLOG_APP_ID = "07022021-220225896-25e3fa6f-ac18-4835-8437-f0f460b9062f"
 const WORKSPACE_ID = "03012021-192624661-c4d2d235-e371-4983-973f-c82b074f9b21";
 const ORGANIZATION_ID = "29102019-093434548-a4fe41b0-1fd0-489a-ac08-a29b98883143";
 const CHAT_MESSAGES_KEY = "workupdateChatMessages";
-const PENDING_WORKLOG_DRAFT_KEY = "workupdatePendingWorklogDraft";
+const PENDING_WORKLOG_ACTIONS_KEY = "workupdatePendingWorklogActions";
 const DEBUG_TOOLS_KEY = "workupdateDebugTools";
 const MAX_DEBUG_EVENTS = 20;
 
@@ -46,7 +46,7 @@ const defaultMessages = [
 let quixyToken = "";
 let currentPmsViewId = "";
 let messages = [...defaultMessages];
-let pendingWorklogDraft = null;
+let pendingWorklogActions = null;
 let pmsLoginGate = null;
 let pmsLoginPollId = 0;
 // When the selected Excel file can't be read in the chat path (permission not
@@ -86,38 +86,6 @@ form.addEventListener("submit", async (event) => {
   messages.push({ role: "user", content });
   await saveChatMessages();
   input.value = "";
-
-  if (pendingWorklogDraft && isConfirmWorklogCommand(content)) {
-    const hasToken = await detectToken({ quiet: true, openIfMissing: false });
-
-    if (!hasToken) {
-      await startPmsLoginGate();
-      await saveChatMessages();
-      return;
-    }
-
-    renderMessages(`Creating ${formatWorklogCount(pendingWorklogDraft)}...`);
-    setChatBusy(true);
-
-    try {
-      await createWorklogsFromAiDrafts(pendingWorklogDraft);
-      pendingWorklogDraft = null;
-      await savePendingWorklogDraft();
-      renderMessages();
-    } catch {
-      renderMessages();
-    } finally {
-      setChatBusy(false);
-      input.focus();
-    }
-
-    return;
-  }
-
-  if (pendingWorklogDraft) {
-    pendingWorklogDraft = null;
-    await savePendingWorklogDraft();
-  }
 
   renderMessages("Thinking...");
   setChatBusy(true);
@@ -164,15 +132,16 @@ form.addEventListener("submit", async (event) => {
       messages[assistantMessageIndex].content = result.reply;
     }
 
-    const returnedDrafts = normalizeWorklogDrafts(
-      result.worklogDrafts || result.worklogDraft,
+    const returnedActions = normalizeWorklogActions(
+      result.worklogActions ||
+        result.worklogAction ||
+        result.worklogDrafts ||
+        result.worklogDraft,
     );
 
-    if (returnedDrafts.length > 0) {
-      pendingWorklogDraft = returnedDrafts;
-      await savePendingWorklogDraft();
+    if (returnedActions.length > 0) {
       await saveChatMessages();
-      await preparePmsSessionForDraft();
+      await executeAiWorklogActions(returnedActions);
     } else {
       await saveChatMessages();
     }
@@ -212,17 +181,6 @@ function showScreen(screen) {
   worklogScreen.classList.toggle("active", !isChat);
 }
 
-async function preparePmsSessionForDraft() {
-  const hasToken = await detectToken({ quiet: true, openIfMissing: false });
-
-  if (hasToken) {
-    clearPmsLoginGate();
-    return;
-  }
-
-  await startPmsLoginGate();
-}
-
 async function startPmsLoginGate() {
   pmsLoginGate = {
     status: "opening",
@@ -251,7 +209,7 @@ function startPmsLoginPolling() {
     stopPmsLoginPolling();
     pmsLoginGate = {
       status: "ready",
-      text: "PMS session detected. Continue to save the reviewed worklog(s).",
+      text: "PMS session detected. Continue to execute the approved worklog action(s).",
     };
     renderMessages();
   }, 3000);
@@ -287,18 +245,18 @@ async function openOrFocusPms() {
 }
 
 async function continueAfterPmsLogin() {
-  if (!pendingWorklogDraft || pmsLoginGate?.status !== "ready") {
+  if (!pendingWorklogActions || pmsLoginGate?.status !== "ready") {
     return;
   }
 
   clearPmsLoginGate();
-  renderMessages(`Creating ${formatWorklogCount(pendingWorklogDraft)}...`);
+  renderMessages(`Creating ${formatWorklogCount(pendingWorklogActions)}...`);
   setChatBusy(true);
 
   try {
-    await createWorklogsFromAiDrafts(pendingWorklogDraft);
-    pendingWorklogDraft = null;
-    await savePendingWorklogDraft();
+    await createWorklogsFromAiActions(pendingWorklogActions);
+    pendingWorklogActions = null;
+    await savePendingWorklogActions();
     renderMessages();
   } catch {
     renderMessages();
@@ -383,8 +341,29 @@ async function createWorklog(event) {
   }
 }
 
-async function createWorklogsFromAiDrafts(draftOrDrafts) {
-  const drafts = normalizeWorklogDrafts(draftOrDrafts);
+async function executeAiWorklogActions(actionOrActions) {
+  const actions = normalizeWorklogActions(actionOrActions);
+
+  if (actions.length === 0) {
+    return;
+  }
+
+  const hasToken = await detectToken({ quiet: true, openIfMissing: false });
+
+  if (!hasToken) {
+    pendingWorklogActions = actions;
+    await savePendingWorklogActions();
+    await startPmsLoginGate();
+    return;
+  }
+
+  pendingWorklogActions = null;
+  await savePendingWorklogActions();
+  await createWorklogsFromAiActions(actions);
+}
+
+async function createWorklogsFromAiActions(actionOrActions) {
+  const drafts = normalizeWorklogActions(actionOrActions);
 
   if (drafts.length === 0) {
     return;
@@ -449,19 +428,19 @@ async function createWorklogsFromAiDrafts(draftOrDrafts) {
   }
 }
 
-function normalizeWorklogDrafts(value) {
+function normalizeWorklogActions(value) {
   if (!value) {
     return [];
   }
 
   if (Array.isArray(value)) {
-    return value.filter(isWorklogDraft);
+    return value.filter(isWorklogAction);
   }
 
-  return isWorklogDraft(value) ? [value] : [];
+  return isWorklogAction(value) ? [value] : [];
 }
 
-function isWorklogDraft(value) {
+function isWorklogAction(value) {
   return (
     value &&
     typeof value === "object" &&
@@ -474,7 +453,7 @@ function isWorklogDraft(value) {
 }
 
 function formatWorklogCount(draftOrDrafts) {
-  const count = normalizeWorklogDrafts(draftOrDrafts).length;
+  const count = normalizeWorklogActions(draftOrDrafts).length;
   return count === 1 ? "worklog" : `${count} worklogs`;
 }
 
@@ -508,7 +487,13 @@ async function readChatStream(response, onDelta, onToolDebug) {
   const decoder = new TextDecoder();
   let buffer = "";
   let rawText = "";
-  let result = { reply: "", worklogDraft: null, worklogDrafts: [] };
+  let result = {
+    reply: "",
+    worklogAction: null,
+    worklogActions: [],
+    worklogDraft: null,
+    worklogDrafts: [],
+  };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -537,6 +522,10 @@ async function readChatStream(response, onDelta, onToolDebug) {
       } else if (parsed.type === "done") {
         result = {
           reply: String(parsed.reply || ""),
+          worklogAction: parsed.worklogAction || null,
+          worklogActions: Array.isArray(parsed.worklogActions)
+            ? parsed.worklogActions
+            : [],
           worklogDraft: parsed.worklogDraft || null,
           worklogDrafts: Array.isArray(parsed.worklogDrafts)
             ? parsed.worklogDrafts
@@ -556,6 +545,10 @@ async function readChatStream(response, onDelta, onToolDebug) {
     if (parsed?.type === "done") {
       result = {
         reply: String(parsed.reply || ""),
+        worklogAction: parsed.worklogAction || null,
+        worklogActions: Array.isArray(parsed.worklogActions)
+          ? parsed.worklogActions
+          : [],
         worklogDraft: parsed.worklogDraft || null,
         worklogDrafts: Array.isArray(parsed.worklogDrafts)
           ? parsed.worklogDrafts
@@ -570,6 +563,8 @@ async function readChatStream(response, onDelta, onToolDebug) {
 
   if (
     !result.reply &&
+    !result.worklogAction &&
+    result.worklogActions.length === 0 &&
     !result.worklogDraft &&
     result.worklogDrafts.length === 0 &&
     rawText.trim().startsWith("{")
@@ -1066,11 +1061,13 @@ async function grantExcelAccessInline() {
 async function loadChatMessages() {
   const stored = await chrome.storage.local.get([
     CHAT_MESSAGES_KEY,
-    PENDING_WORKLOG_DRAFT_KEY,
+    PENDING_WORKLOG_ACTIONS_KEY,
+    "workupdatePendingWorklogDraft",
     DEBUG_TOOLS_KEY,
   ]);
   const storedMessages = stored[CHAT_MESSAGES_KEY];
-  const storedDraft = stored[PENDING_WORKLOG_DRAFT_KEY];
+  const storedActions =
+    stored[PENDING_WORKLOG_ACTIONS_KEY] || stored.workupdatePendingWorklogDraft;
   debugToolsEnabled = Boolean(stored[DEBUG_TOOLS_KEY]);
 
   if (Array.isArray(storedMessages) && storedMessages.length > 0) {
@@ -1081,9 +1078,9 @@ async function loadChatMessages() {
     messages = [...defaultMessages];
   }
 
-  if (storedDraft && typeof storedDraft === "object") {
-    const storedDrafts = normalizeWorklogDrafts(storedDraft);
-    pendingWorklogDraft = storedDrafts.length > 0 ? storedDrafts : null;
+  if (storedActions && typeof storedActions === "object") {
+    const actions = normalizeWorklogActions(storedActions);
+    pendingWorklogActions = actions.length > 0 ? actions : null;
   }
 
   renderToolDebugPanel();
@@ -1097,31 +1094,33 @@ async function saveChatMessages() {
 
 async function startNewChat() {
   messages = [...defaultMessages];
-  pendingWorklogDraft = null;
+  pendingWorklogActions = null;
   // Excel access is a file/origin-level fact, not per-conversation, so it is not
   // reset here. A persisted grant carries across new chats and sessions.
   clearPmsLoginGate();
-  await chrome.storage.local.remove([CHAT_MESSAGES_KEY, PENDING_WORKLOG_DRAFT_KEY]);
+  await chrome.storage.local.remove([
+    CHAT_MESSAGES_KEY,
+    PENDING_WORKLOG_ACTIONS_KEY,
+    "workupdatePendingWorklogDraft",
+  ]);
   renderMessages();
   showScreen("chat");
   input.focus();
 }
 
-async function savePendingWorklogDraft() {
-  if (pendingWorklogDraft) {
+async function savePendingWorklogActions() {
+  if (pendingWorklogActions) {
     await chrome.storage.local.set({
-      [PENDING_WORKLOG_DRAFT_KEY]: pendingWorklogDraft,
+      [PENDING_WORKLOG_ACTIONS_KEY]: pendingWorklogActions,
     });
+    await chrome.storage.local.remove("workupdatePendingWorklogDraft");
     return;
   }
 
-  await chrome.storage.local.remove(PENDING_WORKLOG_DRAFT_KEY);
-}
-
-function isConfirmWorklogCommand(content) {
-  return /^(yes|y|confirm|create|submit|save|looks good|go ahead|proceed)$/i.test(
-    content.trim(),
-  );
+  await chrome.storage.local.remove([
+    PENDING_WORKLOG_ACTIONS_KEY,
+    "workupdatePendingWorklogDraft",
+  ]);
 }
 
 function getLocalDate() {

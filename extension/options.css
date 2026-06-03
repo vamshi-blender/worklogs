@@ -21,6 +21,7 @@ body {
   margin: 10vh auto;
   width: min(560px, calc(100% - 32px));
   border: 1px solid var(--ink);
+  border-radius: 16px;
   background: var(--paper);
   box-shadow: 12px 12px 0 var(--ink);
   padding: 28px;
@@ -52,6 +53,7 @@ label {
 
 input {
   border: 1px solid var(--line);
+  border-radius: 8px;
   background: white;
   color: var(--ink);
   font: inherit;
@@ -89,6 +91,7 @@ input:focus {
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--ink);
+  border-radius: 8px;
   background: white;
   color: var(--ink);
   cursor: pointer;
@@ -102,6 +105,7 @@ input:focus {
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--line);
+  border-radius: 8px;
   background: transparent;
   color: var(--ink);
   cursor: pointer;
@@ -114,6 +118,7 @@ input:focus {
 button {
   width: fit-content;
   border: 1px solid var(--ink);
+  border-radius: 8px;
   background: var(--accent);
   color: white;
   cursor: pointer;

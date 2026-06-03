@@ -110,6 +110,7 @@ textarea {
 
 .debug-clear-button {
   border: 1px solid var(--line);
+  border-radius: 6px;
   background: var(--paper);
   color: var(--ink);
   cursor: pointer;
@@ -141,7 +142,9 @@ textarea {
 
 .tool-debug-item {
   border: 1px solid rgb(255 250 240 / 20%);
+  border-radius: 8px;
   background: rgb(255 250 240 / 6%);
+  overflow: hidden;
 }
 
 .tool-debug-item summary {
@@ -191,6 +194,7 @@ h1 {
   min-width: 34px;
   height: 34px;
   border: 1px solid var(--ink);
+  border-radius: 8px;
   background: var(--paper);
   cursor: pointer;
   font-size: 11px;
@@ -208,8 +212,10 @@ h1 {
 }
 
 .message {
+  width: fit-content;
   max-width: 86%;
   border: 1px solid var(--line);
+  border-radius: 14px;
   background: white;
   overflow-wrap: anywhere;
   padding: 10px 12px;
@@ -373,6 +379,7 @@ h1 {
   align-self: stretch;
   gap: 8px;
   border: 1px solid var(--ink);
+  border-radius: 12px;
   background: #fffdf8;
   padding: 12px;
 }
@@ -396,6 +403,7 @@ h1 {
 .pms-login-gate-button {
   justify-self: start;
   border: 1px solid var(--ink);
+  border-radius: 8px;
   background: var(--accent);
   color: white;
   cursor: pointer;
@@ -424,6 +432,7 @@ textarea {
   max-height: 120px;
   resize: vertical;
   border: 1px solid var(--line);
+  border-radius: 10px;
   background: var(--field);
   color: var(--ink);
   outline: none;
@@ -436,6 +445,7 @@ textarea:focus {
 
 #sendButton {
   border: 1px solid var(--ink);
+  border-radius: 10px;
   background: var(--accent);
   color: white;
   cursor: pointer;
@@ -460,6 +470,7 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   border: 1px solid var(--line);
+  border-radius: 12px;
   background: white;
   padding: 12px;
 }
@@ -482,6 +493,7 @@ textarea:focus {
 .secondary-button,
 #createWorklogButton {
   border: 1px solid var(--ink);
+  border-radius: 8px;
   background: var(--paper);
   color: var(--ink);
   cursor: pointer;
@@ -508,6 +520,7 @@ textarea:focus {
 .worklog-form textarea {
   width: 100%;
   border: 1px solid var(--line);
+  border-radius: 8px;
   background: white;
   color: var(--ink);
   font-size: 13px;
@@ -539,6 +552,7 @@ textarea:focus {
 .worklog-result {
   min-height: 42px;
   border: 1px solid var(--line);
+  border-radius: 10px;
   background: white;
   color: var(--muted);
   font-size: 12px;
