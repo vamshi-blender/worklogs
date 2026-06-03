@@ -16,7 +16,7 @@ body {
   min-height: 100vh;
   background: var(--paper);
   color: var(--ink);
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Poppins", ui-sans-serif, system-ui, sans-serif;
 }
 
 button,
@@ -121,10 +121,10 @@ h1 {
   max-width: 86%;
   border: 1px solid var(--line);
   background: white;
+  overflow-wrap: anywhere;
   padding: 10px 12px;
   font-size: 13px;
   line-height: 1.45;
-  white-space: pre-wrap;
 }
 
 .message.user {
@@ -137,6 +137,137 @@ h1 {
 .message.status {
   width: fit-content;
   color: var(--muted);
+}
+
+.message :is(h1, h2, h3, h4, p, ul, ol, pre, blockquote, .markdown-table-wrap) {
+  margin-top: 0;
+}
+
+.message :is(h1, h2) {
+  margin-bottom: 8px;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.message h3 {
+  margin-bottom: 6px;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.message h4 {
+  margin-bottom: 5px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.message p {
+  margin-bottom: 6px;
+}
+
+.message :is(ul, ol) {
+  margin-bottom: 6px;
+  padding-left: 18px;
+}
+
+.message li {
+  margin-bottom: 4px;
+}
+
+.message li:last-child,
+.message :is(h1, h2, h3, h4, p, ul, ol, pre, blockquote, .markdown-table-wrap):last-child {
+  margin-bottom: 0;
+}
+
+.message code {
+  border-radius: 4px;
+  background: rgb(0 0 0 / 10%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 2px 5px;
+}
+
+.message pre {
+  overflow-x: auto;
+  margin-bottom: 6px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 10%);
+  padding: 9px 10px;
+}
+
+.message pre code {
+  display: block;
+  min-width: max-content;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+.message blockquote {
+  margin-bottom: 6px;
+  border-left: 2px solid currentColor;
+  opacity: 0.82;
+  padding-left: 10px;
+}
+
+.message hr {
+  margin: 10px 0;
+  border: 0;
+  border-top: 1px solid currentColor;
+  opacity: 0.18;
+}
+
+.message a {
+  color: currentColor;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: 6px;
+  border: 1px solid rgb(0 0 0 / 12%);
+  border-radius: 6px;
+}
+
+.message table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.message th,
+.message td {
+  border-bottom: 1px solid rgb(0 0 0 / 10%);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+
+.message th {
+  background: rgb(0 0 0 / 6%);
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.message tr:last-child td {
+  border-bottom: 0;
+}
+
+.message.user .markdown-table-wrap,
+.message.user :is(th, td) {
+  border-color: rgb(255 250 240 / 22%);
+}
+
+.message.user code,
+.message.user pre,
+.message.user th {
+  background: rgb(255 250 240 / 14%);
 }
 
 .pms-login-gate {

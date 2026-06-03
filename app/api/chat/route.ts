@@ -1,9 +1,12 @@
 import { Agent, run, tool } from "@openai/agents";
 import { z } from "zod";
+import ExcelJS from "exceljs";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
+
+const MAX_EXCEL_BASE64_CHARS = 8_500_000;
 
 const messageSchema = z.object({
   role: z.enum(["user", "assistant"]),
@@ -18,7 +21,40 @@ const requestSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
   timeZone: z.string().trim().min(1).max(120).optional(),
+  excelFile: z
+    .object({
+      name: z.string().trim().min(1).max(260),
+      lastModified: z.number().optional(),
+      dataBase64: z.string().min(1).max(MAX_EXCEL_BASE64_CHARS),
+    })
+    .optional(),
+  excelAccess: z
+    .object({
+      status: z.enum([
+        "available",
+        "not_selected",
+        "permission_required",
+        "permission_denied",
+        "file_missing",
+        "read_error",
+        "file_too_large",
+      ]),
+      name: z.string().trim().max(260).optional(),
+      message: z.string().trim().max(1000).optional(),
+    })
+    .optional(),
 });
+
+const excelToolSchema = z.object({
+  sheetName: z.string().trim().min(1).max(120).optional(),
+});
+
+const MAX_EXCEL_BYTES = 6 * 1024 * 1024;
+const MAX_EXCEL_SHEETS = 25;
+const MAX_EXCEL_ROWS_PER_SHEET = 150;
+const MAX_EXCEL_COLUMNS_PER_SHEET = 40;
+const MAX_EXCEL_TOTAL_CELLS = 1800;
+const MAX_EXCEL_CELL_CHARS = 100;
 
 const worklogCategories = [
   "Demo Call",
@@ -185,7 +221,8 @@ const chatAgent = new Agent({
   model: process.env.OPENAI_MODEL ?? "gpt-5.5",
   instructions: [
     "You are Workupdate Assistant, a concise helper inside a Chrome side panel.",
-    "You help users chat normally and prepare PMS worklogs when requested.",
+    "You help users chat normally, read the selected Excel workbook when needed, and prepare PMS worklogs when requested.",
+    "You have two tools: read_excel_data for selected Excel workbook data, and prepare_worklog for creating a reviewed PMS worklog draft. Choose the necessary tool or tools based on the user's request.",
     "When the user asks to raise, create, submit, add, or log a worklog, collect exactly these required values: issue id, worklog date, hours, category, and log description.",
     "Preserve the issue id exactly as the user provides it, except for uppercasing letters. Never change or guess the project prefix, for example do not convert QXY to QKA.",
     `Choose category only from this exact allowed list: ${worklogCategories.join(", ")}.`,
@@ -197,6 +234,7 @@ const chatAgent = new Agent({
     "Accept hours as a positive decimal number. If the user gives hours and minutes, convert them to decimal hours.",
     "When all required values are present, call the prepare_worklog tool. The tool prepares only the minimal draft values; it does not know PMS metadata and does not use PMS tokens.",
     "After preparing a draft, respond with the exact details that will be used: issue id, worklog date, hours, category, and log description. Ask the user to reply Create, Confirm, or Yes to save it. Do not claim it has been saved unless the extension later confirms that.",
+    "When the user's request requires information from the selected Excel workbook, call read_excel_data before answering. Use only the tool output for Excel facts. If the tool says data is truncated, clearly say that your answer is based on the included rows only and ask for a narrower sheet/range when needed.",
     "Keep answers concise unless the user asks for detail.",
   ].join(" "),
 });
@@ -234,9 +272,15 @@ export async function POST(request: Request) {
   }
 
   const messages = parsed.data.messages;
+  const excelDigest = await parseExcelDigest(parsed.data.excelFile);
+  const excelAccess = parsed.data.excelAccess;
   const prompt = formatMessagesForAgent(messages, {
     currentDate: parsed.data.currentDate || getTodayInTimeZone("Asia/Calcutta"),
     timeZone: parsed.data.timeZone || "Asia/Calcutta",
+    excelAvailable: Boolean(excelDigest),
+    excelName: excelDigest?.name || "",
+    excelAccessStatus: excelAccess?.status || "",
+    excelAccessMessage: excelAccess?.message || "",
   });
   let worklogDraft: WorklogDraft | null = null;
 
@@ -258,7 +302,44 @@ export async function POST(request: Request) {
   });
 
   const agent = chatAgent.clone({
-    tools: [prepareWorklog],
+    tools: [
+      prepareWorklog,
+      tool({
+        name: "read_excel_data",
+        description:
+          "Read the selected Excel workbook data supplied by the Chrome extension. Use this whenever the user asks about Excel, workbook, sheet, row, column, daily status, or validation-result data. Optional sheetName narrows the result to one sheet. The tool returns a capped digest of all readable sheets and explicit truncation metadata to prevent token overuse.",
+        parameters: excelToolSchema,
+        async execute(input) {
+          if (!excelDigest) {
+            return {
+              status: excelAccess?.status || "not_selected",
+              name: excelAccess?.name || "",
+              message:
+                excelAccess?.message ||
+                "No Excel file was supplied by the extension. Ask the user to select an Excel file in extension settings.",
+            };
+          }
+
+          if (!input.sheetName) {
+            return excelDigest;
+          }
+
+          const matchingSheets = excelDigest.sheets.filter(
+            (sheet) =>
+              sheet.name.localeCompare(input.sheetName || "", undefined, {
+                sensitivity: "base",
+              }) === 0,
+          );
+
+          return {
+            ...excelDigest,
+            status: matchingSheets.length ? excelDigest.status : "sheet_not_found",
+            requestedSheetName: input.sheetName,
+            sheets: matchingSheets,
+          };
+        },
+      }),
+    ],
   });
 
   const encoder = new TextEncoder();
@@ -324,7 +405,14 @@ export async function POST(request: Request) {
 
 function formatMessagesForAgent(
   messages: z.infer<typeof messageSchema>[],
-  context: { currentDate: string; timeZone: string },
+  context: {
+    currentDate: string;
+    timeZone: string;
+    excelAvailable: boolean;
+    excelName: string;
+    excelAccessStatus: string;
+    excelAccessMessage: string;
+  },
 ) {
   const transcript = messages
     .map(
@@ -336,6 +424,19 @@ function formatMessagesForAgent(
   return [
     "Continue this chat. Use the full transcript for context, then answer only the latest user message.",
     `Current date: ${context.currentDate}. Time zone: ${context.timeZone}.`,
+    context.excelAvailable
+      ? `Selected Excel workbook available to read with read_excel_data: ${context.excelName}.`
+      : [
+          "No selected Excel workbook was supplied with this request.",
+          context.excelAccessStatus
+            ? `Excel access status: ${context.excelAccessStatus}.`
+            : "",
+          context.excelAccessMessage
+            ? `Excel access message: ${context.excelAccessMessage}.`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
     "",
     transcript,
   ].join("\n");
@@ -350,6 +451,132 @@ function getTodayInTimeZone(timeZone: string) {
   }).formatToParts(new Date());
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
+}
+
+async function parseExcelDigest(
+  excelFile: z.infer<typeof requestSchema>["excelFile"],
+) {
+  if (!excelFile) {
+    return null;
+  }
+
+  const bytes = Buffer.from(excelFile.dataBase64, "base64");
+
+  if (bytes.byteLength > MAX_EXCEL_BYTES) {
+    return {
+      status: "file_too_large",
+      name: excelFile.name,
+      byteLength: bytes.byteLength,
+      maxBytes: MAX_EXCEL_BYTES,
+      message:
+        "The selected Excel file is too large to send to the AI safely. Ask the user to provide a smaller workbook or a narrower export.",
+      sheets: [],
+    };
+  }
+
+  const workbook = new ExcelJS.Workbook();
+
+  try {
+    // ExcelJS wants an ArrayBuffer; hand it the exact view over our bytes.
+    await workbook.xlsx.load(
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    );
+  } catch (error) {
+    return {
+      status: "parse_error",
+      name: excelFile.name,
+      message:
+        error instanceof Error
+          ? `Could not parse the selected Excel file: ${error.message}`
+          : "Could not parse the selected Excel file.",
+      sheets: [],
+    };
+  }
+
+  const allSheetNames = workbook.worksheets.map((worksheet) => worksheet.name);
+  let remainingCells = MAX_EXCEL_TOTAL_CELLS;
+  const includedWorksheets = workbook.worksheets.slice(0, MAX_EXCEL_SHEETS);
+
+  const sheets = includedWorksheets.map((worksheet) => {
+    const totalRows = worksheet.rowCount;
+    const totalColumns = worksheet.columnCount;
+    const includedColumns = Math.min(totalColumns, MAX_EXCEL_COLUMNS_PER_SHEET);
+    const maxRowsByCellBudget = includedColumns
+      ? Math.floor(remainingCells / includedColumns)
+      : 0;
+    const includedRows = Math.min(
+      totalRows,
+      MAX_EXCEL_ROWS_PER_SHEET,
+      maxRowsByCellBudget,
+    );
+
+    const rows: string[][] = [];
+
+    // ExcelJS rows and cells are 1-indexed.
+    for (let rowNumber = 1; rowNumber <= includedRows; rowNumber += 1) {
+      const row = worksheet.getRow(rowNumber);
+      const cells: string[] = [];
+
+      for (
+        let columnNumber = 1;
+        columnNumber <= includedColumns;
+        columnNumber += 1
+      ) {
+        cells.push(truncateExcelCell(row.getCell(columnNumber).text));
+      }
+
+      rows.push(cells);
+    }
+
+    remainingCells = Math.max(
+      0,
+      remainingCells - includedRows * includedColumns,
+    );
+
+    return {
+      name: worksheet.name,
+      totalRows,
+      totalColumns,
+      includedRows: rows.length,
+      includedColumns,
+      truncated:
+        rows.length < totalRows ||
+        includedColumns < totalColumns ||
+        remainingCells === 0,
+      rows,
+    };
+  });
+
+  return {
+    status: "ok",
+    name: excelFile.name,
+    lastModified: excelFile.lastModified || null,
+    sheetCount: allSheetNames.length,
+    includedSheetCount: sheets.length,
+    omittedSheets: allSheetNames.slice(MAX_EXCEL_SHEETS),
+    limits: {
+      maxBytes: MAX_EXCEL_BYTES,
+      maxSheets: MAX_EXCEL_SHEETS,
+      maxRowsPerSheet: MAX_EXCEL_ROWS_PER_SHEET,
+      maxColumnsPerSheet: MAX_EXCEL_COLUMNS_PER_SHEET,
+      maxTotalCells: MAX_EXCEL_TOTAL_CELLS,
+      maxCellChars: MAX_EXCEL_CELL_CHARS,
+    },
+    truncated:
+      allSheetNames.length > sheets.length ||
+      sheets.some((sheet) => sheet.truncated),
+    sheets,
+  };
+}
+
+function truncateExcelCell(value: unknown) {
+  const text = value == null ? "" : String(value);
+
+  if (text.length <= MAX_EXCEL_CELL_CHARS) {
+    return text;
+  }
+
+  return `${text.slice(0, MAX_EXCEL_CELL_CHARS)}...`;
 }
 
 function json(body: unknown, status = 200) {

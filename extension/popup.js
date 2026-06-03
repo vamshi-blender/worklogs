@@ -1,4 +1,9 @@
+import { readExcelFile, getExcelAccessStatus } from "./fileStore.js";
+import { renderMarkdownToElement } from "./markdownRenderer.js";
+
 const DEFAULT_BACKEND_URL = "https://worklogs-wheat.vercel.app";
+const MAX_CHAT_EXCEL_BYTES = 6 * 1024 * 1024;
+const MAX_CHAT_EXCEL_BASE64_CHARS = 8_500_000;
 const API_ORIGIN = "https://quixyhomeapi.kwixee.co.in";
 const PMS_ORIGIN = "https://quixyhome.kwixee.co.in";
 const MANAGE_ISSUES_VIEW_ID = "05072022-184836479-5888ab5b-d645-4e86-a937-f2d02d2414c1";
@@ -39,6 +44,10 @@ let messages = [...defaultMessages];
 let pendingWorklogDraft = null;
 let pmsLoginGate = null;
 let pmsLoginPollId = 0;
+// When the selected Excel file can't be read in the chat path (permission not
+// re-granted this session, file moved, etc.), we surface an inline card so the
+// user can re-grant from a real click gesture without leaving for Settings.
+let excelAccessGate = null;
 
 settingsButton.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
@@ -100,6 +109,8 @@ form.addEventListener("submit", async (event) => {
 
   try {
     const backendUrl = await getBackendUrl();
+    const excelContext = await getSelectedExcelForChat();
+    updateExcelAccessGate(excelContext.excelAccess);
     const response = await fetch(`${backendUrl}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -107,6 +118,8 @@ form.addEventListener("submit", async (event) => {
         messages: getRecentChatMessages(),
         currentDate: getLocalDate(),
         timeZone: getLocalTimeZone(),
+        ...(excelContext.excelFile ? { excelFile: excelContext.excelFile } : {}),
+        excelAccess: excelContext.excelAccess,
       }),
     });
 
@@ -761,8 +774,12 @@ function renderMessages(statusText = "") {
   for (const message of normalizeChatMessages(messages)) {
     const bubble = document.createElement("article");
     bubble.className = `message ${message.role}`;
-    bubble.textContent = message.content;
+    renderMarkdownToElement(message.content, bubble);
     messagesElement.appendChild(bubble);
+  }
+
+  if (excelAccessGate) {
+    messagesElement.appendChild(createExcelAccessGateElement());
   }
 
   if (pmsLoginGate) {
@@ -812,6 +829,67 @@ function createPmsLoginGateElement() {
   return card;
 }
 
+function createExcelAccessGateElement() {
+  const card = document.createElement("section");
+  card.className = "pms-login-gate";
+
+  const label = document.createElement("p");
+  label.className = "pms-login-gate-label";
+  label.textContent = "Excel file";
+
+  const text = document.createElement("p");
+  text.className = "pms-login-gate-text";
+  text.textContent = excelAccessGate.message;
+
+  const button = document.createElement("button");
+  button.className = "pms-login-gate-button";
+  button.type = "button";
+
+  // Permission can be re-granted right here from the click gesture. Anything
+  // else (file moved/deleted, too large) needs the user to re-select in Settings.
+  const canGrantInline = ["permission_required", "permission_denied"].includes(
+    excelAccessGate.status,
+  );
+
+  if (canGrantInline) {
+    button.textContent = "Grant access";
+    button.addEventListener("click", grantExcelAccessInline);
+  } else {
+    button.textContent = "Open Settings";
+    button.addEventListener("click", () => chrome.runtime.openOptionsPage());
+  }
+
+  card.append(label, text, button);
+  return card;
+}
+
+function updateExcelAccessGate(access) {
+  // Only nag when a file is selected but unreadable. "not_selected" and
+  // "available" mean nothing to fix, so clear any prior gate.
+  const needsAttention =
+    access &&
+    ["permission_required", "permission_denied", "file_missing", "read_error", "file_too_large"].includes(
+      access.status,
+    );
+
+  excelAccessGate = needsAttention
+    ? { status: access.status, message: access.message || "" }
+    : null;
+}
+
+async function grantExcelAccessInline() {
+  // requestPermission requires a user gesture; this runs inside a click handler.
+  const access = await getExcelAccessStatus({ prompt: true });
+
+  if (access.status === "available") {
+    excelAccessGate = null;
+  } else {
+    excelAccessGate = { status: access.status, message: access.message || "" };
+  }
+
+  renderMessages();
+}
+
 async function loadChatMessages() {
   const stored = await chrome.storage.local.get([
     CHAT_MESSAGES_KEY,
@@ -842,6 +920,8 @@ async function saveChatMessages() {
 async function startNewChat() {
   messages = [...defaultMessages];
   pendingWorklogDraft = null;
+  // Excel access is a file/origin-level fact, not per-conversation, so it is not
+  // reset here. A persisted grant carries across new chats and sessions.
   clearPmsLoginGate();
   await chrome.storage.local.remove([CHAT_MESSAGES_KEY, PENDING_WORKLOG_DRAFT_KEY]);
   renderMessages();
@@ -874,6 +954,89 @@ function getLocalDate() {
 
 function getLocalTimeZone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Calcutta";
+}
+
+async function getSelectedExcelForChat() {
+  // Sending a chat is a user gesture, so requestPermission is allowed here.
+  // With persistent permissions (Chrome 122+, installed extensions), this stays
+  // silent after the first grant and never re-prompts on later sessions/chats.
+  const excelFile = await readExcelFile({ prompt: true });
+
+  if (excelFile.status !== "ok") {
+    return {
+      excelFile: null,
+      excelAccess: {
+        status: excelFile.status,
+        name: excelFile.name || "",
+        message: excelFile.message || "",
+      },
+    };
+  }
+
+  if (excelFile.arrayBuffer.byteLength > MAX_CHAT_EXCEL_BYTES) {
+    return {
+      excelFile: null,
+      excelAccess: {
+        status: "file_too_large",
+        name: excelFile.name,
+        message: `Selected Excel file is too large (${formatBytes(
+          excelFile.arrayBuffer.byteLength,
+        )}). Maximum supported size is ${formatBytes(MAX_CHAT_EXCEL_BYTES)}.`,
+      },
+    };
+  }
+
+  const dataBase64 = arrayBufferToBase64(excelFile.arrayBuffer);
+
+  if (dataBase64.length > MAX_CHAT_EXCEL_BASE64_CHARS) {
+    return {
+      excelFile: null,
+      excelAccess: {
+        status: "file_too_large",
+        name: excelFile.name,
+        message: `Selected Excel file is too large after encoding (${formatBytes(
+          dataBase64.length,
+        )}). Choose a smaller file or export fewer rows.`,
+      },
+    };
+  }
+
+  return {
+    excelFile: {
+      name: excelFile.name,
+      lastModified: excelFile.lastModified,
+      dataBase64,
+    },
+    excelAccess: {
+      status: "available",
+      name: excelFile.name,
+      message: "",
+    },
+  };
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function getRecentChatMessages() {
