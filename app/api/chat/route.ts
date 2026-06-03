@@ -21,6 +21,7 @@ const requestSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
   timeZone: z.string().trim().min(1).max(120).optional(),
+  debugTools: z.boolean().optional(),
   excelFile: z
     .object({
       name: z.string().trim().min(1).max(260),
@@ -45,16 +46,28 @@ const requestSchema = z.object({
     .optional(),
 });
 
-const excelToolSchema = z.object({
-  sheetName: z.string().trim().min(1).max(120).optional(),
+const excelMetadataToolSchema = z.object({});
+
+// Kept for the disabled read_excel_data tool registration below.
+// const excelToolSchema = z.object({
+//   sheetName: z.string().trim().min(1).max(120),
+// });
+
+const excelRangeCsvToolSchema = z.object({
+  sheetName: z.string().trim().min(1).max(120),
+  range: z
+    .string()
+    .trim()
+    .regex(/^[A-Z]{1,3}\d+:[A-Z]{1,3}\d+$/i, "Use an A1 range, for example A1:I39."),
 });
 
 const MAX_EXCEL_BYTES = 6 * 1024 * 1024;
 const MAX_EXCEL_SHEETS = 25;
 const MAX_EXCEL_ROWS_PER_SHEET = 150;
 const MAX_EXCEL_COLUMNS_PER_SHEET = 40;
-const MAX_EXCEL_TOTAL_CELLS = 1800;
 const MAX_EXCEL_CELL_CHARS = 100;
+const MAX_CSV_RANGE_ROWS = 120;
+const MAX_CSV_RANGE_COLUMNS = 20;
 
 const worklogCategories = [
   "Demo Call",
@@ -208,6 +221,10 @@ const worklogDraftSchema = z.object({
   description: z.string().trim().min(1).max(2000),
 });
 
+const worklogDraftsSchema = z.object({
+  drafts: z.array(worklogDraftSchema).min(1).max(10),
+});
+
 type WorklogDraft = z.infer<typeof worklogDraftSchema>;
 
 const corsHeaders = {
@@ -221,8 +238,8 @@ const chatAgent = new Agent({
   model: process.env.OPENAI_MODEL ?? "gpt-5.5",
   instructions: [
     "You are Workupdate Assistant, a concise helper inside a Chrome side panel.",
-    "You help users chat normally, read the selected Excel workbook when needed, and prepare PMS worklogs when requested.",
-    "You have two tools: read_excel_data for selected Excel workbook data, and prepare_worklog for creating a reviewed PMS worklog draft. Choose the necessary tool or tools based on the user's request.",
+    "You help users chat normally, inspect the selected Excel workbook when needed, read focused Excel sheet/range data when needed, and prepare PMS worklogs when requested.",
+    "You have four tools: get_excel_metadata for workbook/sheet names and boundaries, get_range_as_csv for a precise A1 range as CSV, prepare_worklog for one reviewed PMS worklog draft, and prepare_worklogs for multiple reviewed PMS worklog drafts. Choose the necessary tool or tools based on the user's request.",
     "When the user asks to raise, create, submit, add, or log a worklog, collect exactly these required values: issue id, worklog date, hours, category, and log description.",
     "Preserve the issue id exactly as the user provides it, except for uppercasing letters. Never change or guess the project prefix, for example do not convert QXY to QKA.",
     `Choose category only from this exact allowed list: ${worklogCategories.join(", ")}.`,
@@ -232,9 +249,9 @@ const chatAgent = new Agent({
     "Do not fabricate unrelated details. If the issue id, date, hours, or enough work context to choose a category/description is missing or genuinely ambiguous, ask a short follow-up question for only the missing values.",
     "Resolve relative dates such as today, yesterday, and tomorrow using the Current date context in the prompt. Always pass worklogDate as YYYY-MM-DD.",
     "Accept hours as a positive decimal number. If the user gives hours and minutes, convert them to decimal hours.",
-    "When all required values are present, call the prepare_worklog tool. The tool prepares only the minimal draft values; it does not know PMS metadata and does not use PMS tokens.",
-    "After preparing a draft, respond with the exact details that will be used: issue id, worklog date, hours, category, and log description. Ask the user to reply Create, Confirm, or Yes to save it. Do not claim it has been saved unless the extension later confirms that.",
-    "When the user's request requires information from the selected Excel workbook, call read_excel_data before answering. Use only the tool output for Excel facts. If the tool says data is truncated, clearly say that your answer is based on the included rows only and ask for a narrower sheet/range when needed.",
+    "When all required values are present for one worklog, call prepare_worklog. When the user asks to create multiple distinct worklogs in one go, call prepare_worklogs once with all drafts, or call prepare_worklog once per draft. The tools prepare only the minimal draft values; they do not know PMS metadata and do not use PMS tokens.",
+    "After preparing draft(s), respond with the exact details that will be used: issue id, worklog date, hours, category, and log description. For multiple drafts, show each draft clearly. Ask the user to reply Create, Confirm, or Yes to save them. Do not claim anything has been saved unless the extension later confirms that.",
+    "When the user's request requires information from the selected Excel workbook, first call get_excel_metadata unless the correct sheet name and range are already known from the current conversation. Then call get_range_as_csv with the precise sheetName and A1 range needed for the answer. Use only tool output for Excel facts. If a tool says data is truncated, clearly say that your answer is based on the included range only and ask for a narrower range when needed.",
     "Keep answers concise unless the user asks for detail.",
   ].join(" "),
 });
@@ -274,6 +291,7 @@ export async function POST(request: Request) {
   const messages = parsed.data.messages;
   const excelDigest = await parseExcelDigest(parsed.data.excelFile);
   const excelAccess = parsed.data.excelAccess;
+  const debugTools = Boolean(parsed.data.debugTools);
   const prompt = formatMessagesForAgent(messages, {
     currentDate: parsed.data.currentDate || getTodayInTimeZone("Asia/Calcutta"),
     timeZone: parsed.data.timeZone || "Asia/Calcutta",
@@ -282,7 +300,65 @@ export async function POST(request: Request) {
     excelAccessStatus: excelAccess?.status || "",
     excelAccessMessage: excelAccess?.message || "",
   });
-  let worklogDraft: WorklogDraft | null = null;
+  const worklogDrafts: WorklogDraft[] = [];
+  let debugEventId = 0;
+  let sendToolDebug:
+    | ((event: {
+        type: "tool_debug";
+        id: string;
+        name: string;
+        input: unknown;
+        output: unknown;
+        durationMs: number;
+      }) => void)
+    | null = null;
+
+  async function executeWithToolDebug<TInput, TOutput>(
+    name: string,
+    input: TInput,
+    handler: () => Promise<TOutput> | TOutput,
+  ) {
+    const startedAt = Date.now();
+
+    try {
+      const output = await handler();
+      recordToolDebug(name, input, output, Date.now() - startedAt);
+      return output;
+    } catch (error) {
+      recordToolDebug(
+        name,
+        input,
+        {
+          status: "error",
+          message:
+            error instanceof Error ? error.message : "Tool execution failed.",
+        },
+        Date.now() - startedAt,
+      );
+      throw error;
+    }
+  }
+
+  function recordToolDebug(
+    name: string,
+    input: unknown,
+    output: unknown,
+    durationMs: number,
+  ) {
+    if (!debugTools || !sendToolDebug) {
+      return;
+    }
+
+    debugEventId += 1;
+    sendToolDebug({
+      type: "tool_debug",
+      id: String(debugEventId),
+      name,
+      input: summarizeToolDebugValue(input),
+      output: summarizeToolDebugValue(output),
+      durationMs,
+    });
+  }
 
   const prepareWorklog = tool({
     name: "prepare_worklog",
@@ -290,55 +366,120 @@ export async function POST(request: Request) {
       "Prepare the minimal values needed by the browser extension to create a PMS worklog. Use this only after the user has provided issue id, worklog date, hours, category, and log description. The category must be one exact value from the allowed PMS category enum. Preserve the user's issue id prefix exactly, only uppercasing letters if needed. This tool does not save the worklog and must not include PMS metadata such as project id, issue record id, assignee, user id, department, bearer token, or workflow fields.",
     parameters: worklogDraftSchema,
     async execute(input) {
-      worklogDraft = input;
+      return executeWithToolDebug("prepare_worklog", input, () => {
+        worklogDrafts.push(input);
 
-      return {
-        status: "draft_ready",
-        draft: input,
-        nextStep:
-          "The extension should place these values in the Worklog screen for review and creation.",
-      };
+        return {
+          status: "draft_ready",
+          draft: input,
+          nextStep:
+            "The extension should keep this draft pending for user review and creation.",
+        };
+      });
+    },
+  });
+
+  const prepareWorklogs = tool({
+    name: "prepare_worklogs",
+    description:
+      "Prepare multiple PMS worklog drafts in one reviewed batch. Use this after the user has provided all required values for each worklog: issue id, worklog date, hours, category, and log description. Each category must be one exact value from the allowed PMS category enum. Preserve each issue id prefix exactly, only uppercasing letters if needed. This tool does not save worklogs and must not include PMS metadata such as project id, issue record id, assignee, user id, department, bearer token, or workflow fields.",
+    parameters: worklogDraftsSchema,
+    async execute(input) {
+      return executeWithToolDebug("prepare_worklogs", input, () => {
+        worklogDrafts.push(...input.drafts);
+
+        return {
+          status: "drafts_ready",
+          drafts: input.drafts,
+          count: input.drafts.length,
+          nextStep:
+            "The extension should keep these drafts pending for user review and batch creation.",
+        };
+      });
     },
   });
 
   const agent = chatAgent.clone({
     tools: [
       prepareWorklog,
+      prepareWorklogs,
       tool({
-        name: "read_excel_data",
+        name: "get_excel_metadata",
         description:
-          "Read the selected Excel workbook data supplied by the Chrome extension. Use this whenever the user asks about Excel, workbook, sheet, row, column, daily status, or validation-result data. Optional sheetName narrows the result to one sheet. The tool returns a capped digest of all readable sheets and explicit truncation metadata to prevent token overuse.",
-        parameters: excelToolSchema,
+          "Return lightweight metadata for the selected Excel workbook: workbook name, sheet names, row/column boundaries, truncation limits, and access status. Use this before reading sheet data when the correct sheet is not already known.",
+        parameters: excelMetadataToolSchema,
         async execute(input) {
-          if (!excelDigest) {
-            return {
-              status: excelAccess?.status || "not_selected",
-              name: excelAccess?.name || "",
-              message:
-                excelAccess?.message ||
-                "No Excel file was supplied by the extension. Ask the user to select an Excel file in extension settings.",
-            };
-          }
+          return executeWithToolDebug("get_excel_metadata", input, () => {
+            if (!excelDigest) {
+              return {
+                status: excelAccess?.status || "not_selected",
+                name: excelAccess?.name || "",
+                message:
+                  excelAccess?.message ||
+                  "No Excel file was supplied by the extension. Ask the user to select an Excel file in extension settings.",
+              };
+            }
 
-          if (!input.sheetName) {
-            return excelDigest;
-          }
-
-          const matchingSheets = excelDigest.sheets.filter(
-            (sheet) =>
-              sheet.name.localeCompare(input.sheetName || "", undefined, {
-                sensitivity: "base",
-              }) === 0,
-          );
-
-          return {
-            ...excelDigest,
-            status: matchingSheets.length ? excelDigest.status : "sheet_not_found",
-            requestedSheetName: input.sheetName,
-            sheets: matchingSheets,
-          };
+            return getExcelMetadata(excelDigest);
+          });
         },
       }),
+      tool({
+        name: "get_range_as_csv",
+        description:
+          "Return a precise A1 range from one selected Excel sheet as CSV text. Use this when you know the sheetName and range, for example sheetName 'June 2026' and range 'A1:I39'. The range is capped to prevent token overuse.",
+        parameters: excelRangeCsvToolSchema,
+        async execute(input) {
+          return executeWithToolDebug("get_range_as_csv", input, () => {
+            if (!excelDigest) {
+              return {
+                status: excelAccess?.status || "not_selected",
+                name: excelAccess?.name || "",
+                message:
+                  excelAccess?.message ||
+                  "No Excel file was supplied by the extension. Ask the user to select an Excel file in extension settings.",
+              };
+            }
+
+            return getExcelRangeAsCsv(excelDigest, input.sheetName, input.range);
+          });
+        },
+      }),
+      // Keep this broader sheet-sample tool available for future use, but do not
+      // expose it to the agent while get_range_as_csv is the preferred low-token path.
+      // tool({
+      //   name: "read_excel_data",
+      //   description:
+      //     "Read capped row data from exactly one named sheet in the selected Excel workbook. The sheetName parameter is required. If the correct sheet is not already known, call get_excel_metadata first. The tool returns only the requested sheet data plus truncation metadata to prevent token overuse.",
+      //   parameters: excelToolSchema,
+      //   async execute(input) {
+      //     return executeWithToolDebug("read_excel_data", input, () => {
+      //       if (!excelDigest) {
+      //         return {
+      //           status: excelAccess?.status || "not_selected",
+      //           name: excelAccess?.name || "",
+      //           message:
+      //             excelAccess?.message ||
+      //             "No Excel file was supplied by the extension. Ask the user to select an Excel file in extension settings.",
+      //         };
+      //       }
+
+      //       const matchingSheets = excelDigest.sheets.filter(
+      //         (sheet) =>
+      //           sheet.name.localeCompare(input.sheetName, undefined, {
+      //             sensitivity: "base",
+      //           }) === 0,
+      //       );
+
+      //       return {
+      //         ...getExcelMetadata(excelDigest),
+      //         status: matchingSheets.length ? excelDigest.status : "sheet_not_found",
+      //         requestedSheetName: input.sheetName,
+      //         sheets: matchingSheets,
+      //       };
+      //     });
+      //   },
+      // }),
     ],
   });
 
@@ -352,6 +493,7 @@ export async function POST(request: Request) {
             encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
           );
         };
+        sendToolDebug = send;
 
         try {
           const result = await run(agent, prompt, { stream: true });
@@ -379,7 +521,8 @@ export async function POST(request: Request) {
               (typeof result.finalOutput === "string"
                 ? result.finalOutput
                 : JSON.stringify(result.finalOutput)),
-            worklogDraft,
+            worklogDraft: worklogDrafts[0] || null,
+            worklogDrafts,
           });
         } catch (error) {
           send({
@@ -425,7 +568,7 @@ function formatMessagesForAgent(
     "Continue this chat. Use the full transcript for context, then answer only the latest user message.",
     `Current date: ${context.currentDate}. Time zone: ${context.timeZone}.`,
     context.excelAvailable
-      ? `Selected Excel workbook available to read with read_excel_data: ${context.excelName}.`
+      ? `Selected Excel workbook available to inspect with get_excel_metadata and read a precise range with get_range_as_csv: ${context.excelName}.`
       : [
           "No selected Excel workbook was supplied with this request.",
           context.excelAccessStatus
@@ -494,20 +637,15 @@ async function parseExcelDigest(
   }
 
   const allSheetNames = workbook.worksheets.map((worksheet) => worksheet.name);
-  let remainingCells = MAX_EXCEL_TOTAL_CELLS;
   const includedWorksheets = workbook.worksheets.slice(0, MAX_EXCEL_SHEETS);
 
   const sheets = includedWorksheets.map((worksheet) => {
     const totalRows = worksheet.rowCount;
     const totalColumns = worksheet.columnCount;
     const includedColumns = Math.min(totalColumns, MAX_EXCEL_COLUMNS_PER_SHEET);
-    const maxRowsByCellBudget = includedColumns
-      ? Math.floor(remainingCells / includedColumns)
-      : 0;
     const includedRows = Math.min(
       totalRows,
       MAX_EXCEL_ROWS_PER_SHEET,
-      maxRowsByCellBudget,
     );
 
     const rows: string[][] = [];
@@ -528,11 +666,6 @@ async function parseExcelDigest(
       rows.push(cells);
     }
 
-    remainingCells = Math.max(
-      0,
-      remainingCells - includedRows * includedColumns,
-    );
-
     return {
       name: worksheet.name,
       totalRows,
@@ -541,8 +674,7 @@ async function parseExcelDigest(
       includedColumns,
       truncated:
         rows.length < totalRows ||
-        includedColumns < totalColumns ||
-        remainingCells === 0,
+        includedColumns < totalColumns,
       rows,
     };
   });
@@ -559,7 +691,7 @@ async function parseExcelDigest(
       maxSheets: MAX_EXCEL_SHEETS,
       maxRowsPerSheet: MAX_EXCEL_ROWS_PER_SHEET,
       maxColumnsPerSheet: MAX_EXCEL_COLUMNS_PER_SHEET,
-      maxTotalCells: MAX_EXCEL_TOTAL_CELLS,
+      maxCellsPerSheet: MAX_EXCEL_ROWS_PER_SHEET * MAX_EXCEL_COLUMNS_PER_SHEET,
       maxCellChars: MAX_EXCEL_CELL_CHARS,
     },
     truncated:
@@ -577,6 +709,279 @@ function truncateExcelCell(value: unknown) {
   }
 
   return `${text.slice(0, MAX_EXCEL_CELL_CHARS)}...`;
+}
+
+function getExcelMetadata(excelDigest: NonNullable<Awaited<ReturnType<typeof parseExcelDigest>>>) {
+  return {
+    status: excelDigest.status,
+    name: excelDigest.name,
+    lastModified: "lastModified" in excelDigest ? excelDigest.lastModified : null,
+    sheetCount: "sheetCount" in excelDigest ? excelDigest.sheetCount : 0,
+    includedSheetCount:
+      "includedSheetCount" in excelDigest ? excelDigest.includedSheetCount : 0,
+    omittedSheets: "omittedSheets" in excelDigest ? excelDigest.omittedSheets : [],
+    limits: "limits" in excelDigest ? excelDigest.limits : {},
+    truncated: "truncated" in excelDigest ? excelDigest.truncated : false,
+    sheets: Array.isArray(excelDigest.sheets)
+      ? excelDigest.sheets.map((sheet) => ({
+          name: sheet.name,
+          boundary: {
+            startRow: sheet.totalRows > 0 ? 1 : 0,
+            endRow: sheet.totalRows,
+            startColumn: sheet.totalColumns > 0 ? 1 : 0,
+            endColumn: sheet.totalColumns,
+          },
+          totalRows: sheet.totalRows,
+          totalColumns: sheet.totalColumns,
+          readableRows: sheet.includedRows,
+          readableColumns: sheet.includedColumns,
+          truncated: sheet.truncated,
+        }))
+      : [],
+    message: "message" in excelDigest ? excelDigest.message : undefined,
+  };
+}
+
+function getExcelRangeAsCsv(
+  excelDigest: NonNullable<Awaited<ReturnType<typeof parseExcelDigest>>>,
+  sheetName: string,
+  range: string,
+) {
+  const sheet = Array.isArray(excelDigest.sheets)
+    ? excelDigest.sheets.find(
+        (candidate) =>
+          candidate.name.localeCompare(sheetName, undefined, {
+            sensitivity: "base",
+          }) === 0,
+      )
+    : null;
+
+  if (!sheet) {
+    return {
+      ...getExcelMetadata(excelDigest),
+      status: "sheet_not_found",
+      requestedSheetName: sheetName,
+      requestedRange: range,
+      csv: "",
+    };
+  }
+
+  const parsedRange = parseA1Range(range);
+
+  if (!parsedRange) {
+    return {
+      status: "invalid_range",
+      requestedSheetName: sheetName,
+      requestedRange: range,
+      message: "Use an A1 range, for example A1:I39.",
+      csv: "",
+    };
+  }
+
+  const requestedRows = parsedRange.endRow - parsedRange.startRow + 1;
+  const requestedColumns = parsedRange.endColumn - parsedRange.startColumn + 1;
+  const includedRows = Math.min(requestedRows, MAX_CSV_RANGE_ROWS);
+  const includedColumns = Math.min(requestedColumns, MAX_CSV_RANGE_COLUMNS);
+  const endRow = parsedRange.startRow + includedRows - 1;
+  const endColumn = parsedRange.startColumn + includedColumns - 1;
+  const csvRows: string[][] = [];
+
+  for (let rowNumber = parsedRange.startRow; rowNumber <= endRow; rowNumber += 1) {
+    const row: string[] = [];
+
+    for (
+      let columnNumber = parsedRange.startColumn;
+      columnNumber <= endColumn;
+      columnNumber += 1
+    ) {
+      row.push(sheet.rows[rowNumber - 1]?.[columnNumber - 1] || "");
+    }
+
+    csvRows.push(row);
+  }
+
+  return {
+    status: excelDigest.status,
+    name: excelDigest.name,
+    requestedSheetName: sheetName,
+    resolvedSheetName: sheet.name,
+    requestedRange: range,
+    returnedRange: `${columnNumberToName(parsedRange.startColumn)}${parsedRange.startRow}:${columnNumberToName(endColumn)}${endRow}`,
+    requestedRows,
+    requestedColumns,
+    returnedRows: csvRows.length,
+    returnedColumns: includedColumns,
+    truncated:
+      requestedRows > includedRows ||
+      requestedColumns > includedColumns ||
+      endRow > sheet.includedRows ||
+      endColumn > sheet.includedColumns,
+    limits: {
+      maxRows: MAX_CSV_RANGE_ROWS,
+      maxColumns: MAX_CSV_RANGE_COLUMNS,
+      sourceReadableRows: sheet.includedRows,
+      sourceReadableColumns: sheet.includedColumns,
+    },
+    csv: csvRows.map((row) => row.map(csvEscape).join(",")).join("\n"),
+  };
+}
+
+function parseA1Range(range: string) {
+  const match = range
+    .trim()
+    .toUpperCase()
+    .match(/^([A-Z]{1,3})(\d+):([A-Z]{1,3})(\d+)$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const startColumn = columnNameToNumber(match[1]);
+  const startRow = Number(match[2]);
+  const endColumn = columnNameToNumber(match[3]);
+  const endRow = Number(match[4]);
+
+  if (
+    startColumn < 1 ||
+    endColumn < 1 ||
+    startRow < 1 ||
+    endRow < 1
+  ) {
+    return null;
+  }
+
+  return {
+    startColumn: Math.min(startColumn, endColumn),
+    endColumn: Math.max(startColumn, endColumn),
+    startRow: Math.min(startRow, endRow),
+    endRow: Math.max(startRow, endRow),
+  };
+}
+
+function columnNameToNumber(name: string) {
+  return name.split("").reduce((value, letter) => {
+    return value * 26 + letter.charCodeAt(0) - 64;
+  }, 0);
+}
+
+function columnNumberToName(value: number) {
+  let remaining = value;
+  let name = "";
+
+  while (remaining > 0) {
+    const modulo = (remaining - 1) % 26;
+    name = String.fromCharCode(65 + modulo) + name;
+    remaining = Math.floor((remaining - modulo) / 26);
+  }
+
+  return name;
+}
+
+function csvEscape(value: string) {
+  if (/[",\n\r]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+
+  return value;
+}
+
+function summarizeToolDebugValue(value: unknown): unknown {
+  return {
+    approxJsonChars: safeJsonLength(value),
+    value: summarizeDebugValue(value, 0),
+  };
+}
+
+function summarizeDebugValue(value: unknown, depth: number): unknown {
+  if (value == null || typeof value !== "object") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    const limit = depth === 0 ? 10 : 5;
+    return {
+      type: "array",
+      length: value.length,
+      items: value.slice(0, limit).map((item) => summarizeDebugValue(item, depth + 1)),
+      omitted: Math.max(0, value.length - limit),
+    };
+  }
+
+  const record = value as Record<string, unknown>;
+
+  if (Array.isArray(record.sheets)) {
+    return {
+      ...copyDebugFields(record, [
+        "status",
+        "name",
+        "requestedSheetName",
+        "sheetCount",
+        "includedSheetCount",
+        "omittedSheets",
+        "truncated",
+        "limits",
+        "message",
+      ]),
+      sheets: record.sheets.slice(0, 5).map((sheet) => summarizeExcelSheet(sheet)),
+      omittedDebugSheets: Math.max(0, record.sheets.length - 5),
+    };
+  }
+
+  const entries = Object.entries(record);
+  const limit = depth === 0 ? 20 : 10;
+  const result: Record<string, unknown> = {};
+
+  for (const [key, item] of entries.slice(0, limit)) {
+    result[key] = summarizeDebugValue(item, depth + 1);
+  }
+
+  if (entries.length > limit) {
+    result.__omittedKeys = entries.length - limit;
+  }
+
+  return result;
+}
+
+function summarizeExcelSheet(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const sheet = value as Record<string, unknown>;
+  const rows = Array.isArray(sheet.rows) ? sheet.rows : [];
+
+  return {
+    ...copyDebugFields(sheet, [
+      "name",
+      "totalRows",
+      "totalColumns",
+      "includedRows",
+      "includedColumns",
+      "truncated",
+    ]),
+    sampleRows: rows.slice(0, 5),
+    omittedDebugRows: Math.max(0, rows.length - 5),
+  };
+}
+
+function copyDebugFields(source: Record<string, unknown>, keys: string[]) {
+  const result: Record<string, unknown> = {};
+
+  for (const key of keys) {
+    if (key in source) {
+      result[key] = source[key];
+    }
+  }
+
+  return result;
+}
+
+function safeJsonLength(value: unknown) {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return null;
+  }
 }
 
 function json(body: unknown, status = 200) {

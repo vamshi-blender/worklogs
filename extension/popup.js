@@ -13,6 +13,8 @@ const WORKSPACE_ID = "03012021-192624661-c4d2d235-e371-4983-973f-c82b074f9b21";
 const ORGANIZATION_ID = "29102019-093434548-a4fe41b0-1fd0-489a-ac08-a29b98883143";
 const CHAT_MESSAGES_KEY = "workupdateChatMessages";
 const PENDING_WORKLOG_DRAFT_KEY = "workupdatePendingWorklogDraft";
+const DEBUG_TOOLS_KEY = "workupdateDebugTools";
+const MAX_DEBUG_EVENTS = 20;
 
 const messagesElement = document.querySelector("#messages");
 const form = document.querySelector("#chatForm");
@@ -30,6 +32,9 @@ const worklogForm = document.querySelector("#worklogForm");
 const worklogDateInput = document.querySelector("#worklogDateInput");
 const worklogResult = document.querySelector("#worklogResult");
 const createWorklogButton = document.querySelector("#createWorklogButton");
+const debugToolsToggle = document.querySelector("#debugToolsToggle");
+const clearDebugButton = document.querySelector("#clearDebugButton");
+const toolDebugPanel = document.querySelector("#toolDebugPanel");
 
 const defaultMessages = [
   {
@@ -48,6 +53,8 @@ let pmsLoginPollId = 0;
 // re-granted this session, file moved, etc.), we surface an inline card so the
 // user can re-grant from a real click gesture without leaving for Settings.
 let excelAccessGate = null;
+let debugToolsEnabled = false;
+let toolDebugEvents = [];
 
 settingsButton.addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
@@ -58,6 +65,15 @@ chatTab.addEventListener("click", () => showScreen("chat"));
 worklogTab.addEventListener("click", () => showScreen("worklog"));
 detectTokenButton.addEventListener("click", detectToken);
 worklogForm.addEventListener("submit", createWorklog);
+debugToolsToggle?.addEventListener("change", async () => {
+  debugToolsEnabled = Boolean(debugToolsToggle.checked);
+  await chrome.storage.local.set({ [DEBUG_TOOLS_KEY]: debugToolsEnabled });
+  renderToolDebugPanel();
+});
+clearDebugButton?.addEventListener("click", () => {
+  toolDebugEvents = [];
+  renderToolDebugPanel();
+});
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -80,11 +96,11 @@ form.addEventListener("submit", async (event) => {
       return;
     }
 
-    renderMessages("Creating worklog...");
+    renderMessages(`Creating ${formatWorklogCount(pendingWorklogDraft)}...`);
     setChatBusy(true);
 
     try {
-      await createWorklogFromAiDraft(pendingWorklogDraft);
+      await createWorklogsFromAiDrafts(pendingWorklogDraft);
       pendingWorklogDraft = null;
       await savePendingWorklogDraft();
       renderMessages();
@@ -118,6 +134,7 @@ form.addEventListener("submit", async (event) => {
         messages: getRecentChatMessages(),
         currentDate: getLocalDate(),
         timeZone: getLocalTimeZone(),
+        debugTools: debugToolsEnabled,
         ...(excelContext.excelFile ? { excelFile: excelContext.excelFile } : {}),
         excelAccess: excelContext.excelAccess,
       }),
@@ -134,17 +151,25 @@ form.addEventListener("submit", async (event) => {
     }) - 1;
     renderMessages();
 
-    const result = await readChatStream(response, (delta) => {
-      messages[assistantMessageIndex].content += delta;
-      renderMessages();
-    });
+    const result = await readChatStream(
+      response,
+      (delta) => {
+        messages[assistantMessageIndex].content += delta;
+        renderMessages();
+      },
+      addToolDebugEvent,
+    );
 
     if (result.reply && !messages[assistantMessageIndex].content.trim()) {
       messages[assistantMessageIndex].content = result.reply;
     }
 
-    if (result.worklogDraft) {
-      pendingWorklogDraft = result.worklogDraft;
+    const returnedDrafts = normalizeWorklogDrafts(
+      result.worklogDrafts || result.worklogDraft,
+    );
+
+    if (returnedDrafts.length > 0) {
+      pendingWorklogDraft = returnedDrafts;
       await savePendingWorklogDraft();
       await saveChatMessages();
       await preparePmsSessionForDraft();
@@ -226,7 +251,7 @@ function startPmsLoginPolling() {
     stopPmsLoginPolling();
     pmsLoginGate = {
       status: "ready",
-      text: "PMS session detected. Continue to save the reviewed worklog.",
+      text: "PMS session detected. Continue to save the reviewed worklog(s).",
     };
     renderMessages();
   }, 3000);
@@ -267,11 +292,11 @@ async function continueAfterPmsLogin() {
   }
 
   clearPmsLoginGate();
-  renderMessages("Creating worklog...");
+  renderMessages(`Creating ${formatWorklogCount(pendingWorklogDraft)}...`);
   setChatBusy(true);
 
   try {
-    await createWorklogFromAiDraft(pendingWorklogDraft);
+    await createWorklogsFromAiDrafts(pendingWorklogDraft);
     pendingWorklogDraft = null;
     await savePendingWorklogDraft();
     renderMessages();
@@ -358,49 +383,115 @@ async function createWorklog(event) {
   }
 }
 
-async function createWorklogFromAiDraft(draft) {
+async function createWorklogsFromAiDrafts(draftOrDrafts) {
+  const drafts = normalizeWorklogDrafts(draftOrDrafts);
+
+  if (drafts.length === 0) {
+    return;
+  }
+
   messages.push({
     role: "assistant",
-    content: `Creating worklog for ${draft.issueId}...`,
+    content:
+      drafts.length === 1
+        ? `Creating worklog for ${drafts[0].issueId}...`
+        : `Creating ${drafts.length} worklogs...`,
   });
   await saveChatMessages();
   renderMessages();
 
+  const savedRecords = [];
+
   try {
-    const saved = await saveWorklog({
-      issueId: draft.issueId,
-      worklogDate: draft.worklogDate,
-      hours: String(draft.hours),
-      category: draft.category,
-      description: draft.description,
-      onStatus(status) {
-        messages[messages.length - 1] = {
-          role: "assistant",
-          content: status,
-        };
-        renderMessages();
-      },
-    });
+    for (let index = 0; index < drafts.length; index += 1) {
+      const draft = drafts[index];
+      const prefix =
+        drafts.length === 1 ? "" : `Worklog ${index + 1}/${drafts.length}: `;
+      const saved = await saveWorklog({
+        issueId: draft.issueId,
+        worklogDate: draft.worklogDate,
+        hours: String(draft.hours),
+        category: draft.category,
+        description: draft.description,
+        onStatus(status) {
+          messages[messages.length - 1] = {
+            role: "assistant",
+            content: `${prefix}${status}`,
+          };
+          renderMessages();
+        },
+      });
+
+      savedRecords.push(saved);
+    }
 
     messages[messages.length - 1] = {
       role: "assistant",
-      content: `Worklog created for ${saved.issueId}. Record: ${saved.recordId}`,
+      content: formatCreatedWorklogsMessage(savedRecords),
     };
     await saveChatMessages();
   } catch (error) {
+    const partialMessage =
+      savedRecords.length > 0
+        ? `\n\nCreated before the failure:\n${savedRecords
+            .map((saved, index) => `${index + 1}. ${saved.issueId} - ${saved.recordId}`)
+            .join("\n")}`
+        : "";
     messages[messages.length - 1] = {
       role: "assistant",
       content:
         error instanceof Error
-          ? `I could not create the worklog: ${error.message}`
-          : "I could not create the worklog.",
+          ? `I could not create all requested worklogs: ${error.message}${partialMessage}`
+          : `I could not create all requested worklogs.${partialMessage}`,
     };
     await saveChatMessages();
     throw error;
   }
 }
 
-async function readChatStream(response, onDelta) {
+function normalizeWorklogDrafts(value) {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.filter(isWorklogDraft);
+  }
+
+  return isWorklogDraft(value) ? [value] : [];
+}
+
+function isWorklogDraft(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    typeof value.issueId === "string" &&
+    typeof value.worklogDate === "string" &&
+    typeof value.category === "string" &&
+    typeof value.description === "string" &&
+    Number.isFinite(Number(value.hours))
+  );
+}
+
+function formatWorklogCount(draftOrDrafts) {
+  const count = normalizeWorklogDrafts(draftOrDrafts).length;
+  return count === 1 ? "worklog" : `${count} worklogs`;
+}
+
+function formatCreatedWorklogsMessage(savedRecords) {
+  if (savedRecords.length === 1) {
+    const [saved] = savedRecords;
+    return `Worklog created for ${saved.issueId}. Record: ${saved.recordId}`;
+  }
+
+  const rows = savedRecords.map(
+    (saved, index) => `${index + 1}. ${saved.issueId} - ${saved.recordId}`,
+  );
+
+  return `Created ${savedRecords.length} worklogs:\n\n${rows.join("\n")}`;
+}
+
+async function readChatStream(response, onDelta, onToolDebug) {
   const contentType = response.headers.get("content-type") || "";
 
   if (!contentType.includes("text/event-stream")) {
@@ -417,7 +508,7 @@ async function readChatStream(response, onDelta) {
   const decoder = new TextDecoder();
   let buffer = "";
   let rawText = "";
-  let result = { reply: "", worklogDraft: null };
+  let result = { reply: "", worklogDraft: null, worklogDrafts: [] };
 
   while (true) {
     const { done, value } = await reader.read();
@@ -441,10 +532,15 @@ async function readChatStream(response, onDelta) {
 
       if (parsed.type === "delta") {
         onDelta(String(parsed.value || ""));
+      } else if (parsed.type === "tool_debug") {
+        onToolDebug?.(parsed);
       } else if (parsed.type === "done") {
         result = {
           reply: String(parsed.reply || ""),
           worklogDraft: parsed.worklogDraft || null,
+          worklogDrafts: Array.isArray(parsed.worklogDrafts)
+            ? parsed.worklogDrafts
+            : [],
         };
       } else if (parsed.type === "error") {
         throw new Error(parsed.error || "The backend stream failed.");
@@ -461,17 +557,94 @@ async function readChatStream(response, onDelta) {
       result = {
         reply: String(parsed.reply || ""),
         worklogDraft: parsed.worklogDraft || null,
+        worklogDrafts: Array.isArray(parsed.worklogDrafts)
+          ? parsed.worklogDrafts
+          : [],
       };
     } else if (parsed?.type === "error") {
       throw new Error(parsed.error || "The backend stream failed.");
+    } else if (parsed?.type === "tool_debug") {
+      onToolDebug?.(parsed);
     }
   }
 
-  if (!result.reply && !result.worklogDraft && rawText.trim().startsWith("{")) {
+  if (
+    !result.reply &&
+    !result.worklogDraft &&
+    result.worklogDrafts.length === 0 &&
+    rawText.trim().startsWith("{")
+  ) {
     return JSON.parse(rawText);
   }
 
   return result;
+}
+
+function addToolDebugEvent(event) {
+  if (!debugToolsEnabled) {
+    return;
+  }
+
+  toolDebugEvents.push({
+    id: event.id || `${Date.now()}-${toolDebugEvents.length}`,
+    name: event.name || "tool",
+    input: event.input || null,
+    output: event.output || null,
+    durationMs: event.durationMs,
+    createdAt: new Date().toLocaleTimeString(),
+  });
+
+  toolDebugEvents = toolDebugEvents.slice(-MAX_DEBUG_EVENTS);
+  renderToolDebugPanel();
+}
+
+function renderToolDebugPanel() {
+  if (!toolDebugPanel || !debugToolsToggle) {
+    return;
+  }
+
+  debugToolsToggle.checked = debugToolsEnabled;
+  toolDebugPanel.hidden = !debugToolsEnabled;
+
+  if (!debugToolsEnabled) {
+    return;
+  }
+
+  toolDebugPanel.replaceChildren();
+
+  if (toolDebugEvents.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "tool-debug-empty";
+    empty.textContent = "No tool calls captured yet.";
+    toolDebugPanel.appendChild(empty);
+    return;
+  }
+
+  for (const event of [...toolDebugEvents].reverse()) {
+    const details = document.createElement("details");
+    details.className = "tool-debug-item";
+    details.open = true;
+
+    const summary = document.createElement("summary");
+    summary.textContent = `${event.name} (${event.durationMs ?? "?"} ms)`;
+
+    const meta = document.createElement("p");
+    meta.className = "tool-debug-meta";
+    meta.textContent = event.createdAt;
+
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(
+      {
+        input: event.input,
+        output: event.output,
+      },
+      null,
+      2,
+    );
+
+    details.append(summary, meta, pre);
+    toolDebugPanel.appendChild(details);
+  }
 }
 
 function parseServerSentEvent(event) {
@@ -894,9 +1067,11 @@ async function loadChatMessages() {
   const stored = await chrome.storage.local.get([
     CHAT_MESSAGES_KEY,
     PENDING_WORKLOG_DRAFT_KEY,
+    DEBUG_TOOLS_KEY,
   ]);
   const storedMessages = stored[CHAT_MESSAGES_KEY];
   const storedDraft = stored[PENDING_WORKLOG_DRAFT_KEY];
+  debugToolsEnabled = Boolean(stored[DEBUG_TOOLS_KEY]);
 
   if (Array.isArray(storedMessages) && storedMessages.length > 0) {
     messages = normalizeChatMessages(storedMessages);
@@ -907,8 +1082,11 @@ async function loadChatMessages() {
   }
 
   if (storedDraft && typeof storedDraft === "object") {
-    pendingWorklogDraft = storedDraft;
+    const storedDrafts = normalizeWorklogDrafts(storedDraft);
+    pendingWorklogDraft = storedDrafts.length > 0 ? storedDrafts : null;
   }
+
+  renderToolDebugPanel();
 }
 
 async function saveChatMessages() {
@@ -957,10 +1135,9 @@ function getLocalTimeZone() {
 }
 
 async function getSelectedExcelForChat() {
-  // Sending a chat is a user gesture, so requestPermission is allowed here.
-  // With persistent permissions (Chrome 122+, installed extensions), this stays
-  // silent after the first grant and never re-prompts on later sessions/chats.
-  const excelFile = await readExcelFile({ prompt: true });
+  // Chat submission may include awaits before this point, so permission prompts
+  // are handled by the explicit inline Grant access button instead.
+  const excelFile = await readExcelFile({ prompt: false });
 
   if (excelFile.status !== "ok") {
     return {

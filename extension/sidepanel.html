@@ -35,6 +35,16 @@
       </nav>
 
       <section id="chatScreen" class="screen active">
+        <section class="debug-toolbar" aria-label="Agent debug controls">
+          <label class="debug-toggle">
+            <input id="debugToolsToggle" type="checkbox" />
+            Show tool calls
+          </label>
+          <button id="clearDebugButton" class="debug-clear-button" type="button">
+            Clear
+          </button>
+        </section>
+        <section id="toolDebugPanel" class="tool-debug-panel" hidden></section>
         <section id="messages" class="messages" aria-live="polite"></section>
 
         <form id="chatForm" class="composer">

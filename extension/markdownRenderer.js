@@ -77,27 +77,10 @@ function parseBlocks(markdown) {
       continue;
     }
 
-    if (/^\s*[-*]\s+/.test(line)) {
-      const items = [];
-
-      while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*[-*]\s+/, ""));
-        index += 1;
-      }
-
-      blocks.push({ type: "list", ordered: false, items });
-      continue;
-    }
-
-    if (/^\s*\d+[.)]\s+/.test(line)) {
-      const items = [];
-
-      while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
-        items.push(lines[index].replace(/^\s*\d+[.)]\s+/, ""));
-        index += 1;
-      }
-
-      blocks.push({ type: "list", ordered: true, items });
+    if (parseListItem(line)) {
+      const result = parseList(lines, index, indentWidth(line));
+      blocks.push(result.list);
+      index = result.index;
       continue;
     }
 
@@ -132,10 +115,86 @@ function startsSpecialBlock(lines, index) {
     isTableStart(lines, index) ||
     /^(#{1,4})\s+/.test(line) ||
     /^\s*>\s?/.test(line) ||
-    /^\s*[-*]\s+/.test(line) ||
-    /^\s*\d+[.)]\s+/.test(line) ||
+    Boolean(parseListItem(line)) ||
     /^\s*---+\s*$/.test(line)
   );
+}
+
+function indentWidth(line) {
+  const match = /^[ \t]*/.exec(line);
+  // Treat a tab as two spaces so tab- and space-indented lists nest alike.
+  return match[0].replace(/\t/g, "  ").length;
+}
+
+function parseListItem(line) {
+  const match = /^([ \t]*)([-*+]|\d+[.)])\s+(.*)$/.exec(line);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    indent: indentWidth(line),
+    ordered: /\d/.test(match[2]),
+    start: Number.parseInt(match[2], 10),
+    text: match[3],
+  };
+}
+
+// Builds one list (and any deeper nested lists) starting at `index`, consuming
+// every item at `baseIndent`, their wrapped continuation lines, and any more
+// deeply indented sub-lists. Returns the list block and the next line index.
+function parseList(lines, index, baseIndent) {
+  const item = parseListItem(lines[index]);
+  const ordered = item.ordered;
+  const start = item.start;
+  const items = [];
+
+  while (index < lines.length) {
+    const current = parseListItem(lines[index]);
+
+    if (!current || current.indent < baseIndent) {
+      break;
+    }
+
+    if (current.indent > baseIndent) {
+      // A more-indented marker: nest it under the previous item. The child may
+      // be a different kind (e.g. bullets under a numbered item), so we don't
+      // gate this on matching ordered-ness.
+      if (!items.length) {
+        break;
+      }
+
+      const nested = parseList(lines, index, current.indent);
+      items[items.length - 1].push(nested.list);
+      index = nested.index;
+      continue;
+    }
+
+    // Same indent but the marker kind switched (e.g. `-` then `1.`): that's a
+    // new sibling list, not a continuation of this one.
+    if (current.ordered !== ordered) {
+      break;
+    }
+
+    const content = [current.text];
+    index += 1;
+
+    // Pull in wrapped continuation lines (indented further than the marker,
+    // no list marker of their own) so long items stay in one <li>.
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !parseListItem(lines[index]) &&
+      indentWidth(lines[index]) > baseIndent
+    ) {
+      content.push(lines[index].trim());
+      index += 1;
+    }
+
+    items.push([content.join("\n")]);
+  }
+
+  return { list: { type: "list", ordered, start, items }, index };
 }
 
 function isTableStart(lines, index) {
@@ -177,9 +236,19 @@ function renderBlock(block) {
   if (block.type === "list") {
     const element = document.createElement(block.ordered ? "ol" : "ul");
 
+    if (block.ordered && Number.isInteger(block.start) && block.start !== 1) {
+      element.start = block.start;
+    }
+
     for (const item of block.items) {
       const listItem = document.createElement("li");
-      renderInline(item, listItem);
+      const [text, ...children] = item;
+      renderInline(text, listItem);
+
+      for (const child of children) {
+        listItem.appendChild(renderBlock(child));
+      }
+
       element.appendChild(listItem);
     }
 
@@ -253,7 +322,7 @@ function renderTable(block) {
 
 function renderInline(text, target) {
   const pattern =
-    /(`[^`]+`|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_)/g;
+    /(`[^`]+`|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*]+?)\*\*|__([^_]+?)__|\*([^*]+?)\*|_([^_]+?)_|~~([^~]+?)~~)/g;
   let lastIndex = 0;
   let match;
 
@@ -279,6 +348,10 @@ function renderInline(text, target) {
       const strong = document.createElement("strong");
       strong.textContent = match[4] || match[5];
       target.appendChild(strong);
+    } else if (match[8]) {
+      const strike = document.createElement("del");
+      strike.textContent = match[8];
+      target.appendChild(strike);
     } else {
       const emphasis = document.createElement("em");
       emphasis.textContent = match[6] || match[7] || "";
