@@ -9,7 +9,7 @@
   <body>
     <main class="panel">
       <p class="eyebrow">Workupdate AI</p>
-      <h1>Backend settings</h1>
+      <h1>Extension settings</h1>
       <form id="settingsForm">
         <label for="backendUrl">Backend URL</label>
         <input
@@ -19,10 +19,26 @@
           placeholder="http://localhost:3000"
           required
         />
+
+        <label>Excel file</label>
+        <div class="file-path-row">
+          <button type="button" id="chooseExcelFile" class="file-select-button">
+            Choose Excel file…
+          </button>
+          <button type="button" id="clearExcelFile" class="ghost-button" hidden>
+            Clear
+          </button>
+        </div>
+        <p id="selectedFile" class="full-path" title=""></p>
+        <p class="hint">
+          The selected file is remembered so the AI can read it later without
+          re-picking. Your browser may ask once per session to confirm access.
+        </p>
+
         <button type="submit">Save</button>
       </form>
       <p id="status" role="status"></p>
     </main>
-    <script src="options.js"></script>
+    <script type="module" src="options.js"></script>
   </body>
 </html>

@@ -63,6 +63,54 @@ input:focus {
   outline: none;
 }
 
+.file-path-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.full-path {
+  margin: 0;
+  color: #6b5a45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.hint {
+  margin: 0;
+  color: #7b5b2d;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.file-select-button {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--ink);
+  background: white;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 10px 14px;
+}
+
+.ghost-button {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 10px 14px;
+}
+
 button {
   width: fit-content;
   border: 1px solid var(--ink);
