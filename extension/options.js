@@ -1,17 +1,17 @@
 import {
   saveExcelHandle,
   getExcelAccessStatus,
-  clearExcelHandle,
 } from "./fileStore.js";
 
-const DEFAULT_BACKEND_URL = "https://worklogs-wheat.vercel.app";
+const DEFAULT_BACKEND_URL = "https://worklogs-wheat.vercel.app/";
 const form = document.querySelector("#settingsForm");
-const backendUrlInput = document.querySelector("#backendUrl");
 const chooseButton = document.querySelector("#chooseExcelFile");
 const grantButton = document.querySelector("#grantExcelAccess");
-const clearButton = document.querySelector("#clearExcelFile");
 const selectedFileElement = document.querySelector("#selectedFile");
 const statusElement = document.querySelector("#status");
+const backendUrlOptions = Array.from(
+  document.querySelectorAll("input[name='backendUrl']"),
+);
 
 function setStatus(message, transient = false) {
   statusElement.textContent = message;
@@ -25,7 +25,6 @@ function setStatus(message, transient = false) {
 function renderSelectedFile(access) {
   selectedFileElement.textContent = access.name || "No file selected.";
   selectedFileElement.title = access.name || "";
-  clearButton.hidden = access.status === "not_selected";
   grantButton.hidden = !["permission_required", "permission_denied"].includes(
     access.status,
   );
@@ -48,7 +47,14 @@ async function refreshSelectedFile() {
 }
 
 chrome.storage.sync.get(["backendUrl"]).then((stored) => {
-  backendUrlInput.value = stored.backendUrl || DEFAULT_BACKEND_URL;
+  const selectedUrl = normalizeUrl(stored.backendUrl || DEFAULT_BACKEND_URL);
+  const matchingOption =
+    backendUrlOptions.find((option) => normalizeUrl(option.value) === selectedUrl) ||
+    backendUrlOptions.find((option) => normalizeUrl(option.value) === normalizeUrl(DEFAULT_BACKEND_URL));
+
+  if (matchingOption) {
+    matchingOption.checked = true;
+  }
 });
 
 refreshSelectedFile();
@@ -60,6 +66,7 @@ chooseButton.addEventListener("click", async () => {
   }
 
   try {
+    setStatus("Opening file picker...");
     const [handle] = await window.showOpenFilePicker({
       multiple: false,
       types: [
@@ -86,20 +93,21 @@ chooseButton.addEventListener("click", async () => {
 });
 
 grantButton.addEventListener("click", async () => {
+  setStatus("Requesting Excel file access...");
   renderSelectedFile(await getExcelAccessStatus({ prompt: true }));
-});
-
-clearButton.addEventListener("click", async () => {
-  await clearExcelHandle();
-  renderSelectedFile({ status: "not_selected" });
-  setStatus("File selection cleared.", true);
 });
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  setStatus("Saving settings...");
 
-  const backendUrl = backendUrlInput.value.trim().replace(/\/+$/, "");
+  const selectedOption = backendUrlOptions.find((option) => option.checked);
+  const backendUrl = selectedOption?.value || DEFAULT_BACKEND_URL;
   await chrome.storage.sync.set({ backendUrl });
 
   setStatus("Saved.", true);
 });
+
+function normalizeUrl(url) {
+  return String(url).trim().replace(/\/+$/, "");
+}

@@ -17,14 +17,31 @@
       <p class="eyebrow">Workupdate AI</p>
       <h1>Extension settings</h1>
       <form id="settingsForm">
-        <label for="backendUrl">Backend URL</label>
-        <input
-          id="backendUrl"
-          name="backendUrl"
-          type="url"
-          placeholder="http://localhost:3000"
-          required
-        />
+        <label>Backend URL</label>
+        <div class="radio-stack" role="radiogroup" aria-label="Backend URL">
+          <label class="radio-option">
+            <input
+              type="radio"
+              name="backendUrl"
+              value="http://localhost:3000"
+            />
+            <span>
+              <strong>Local</strong>
+              <small>http://localhost:3000</small>
+            </span>
+          </label>
+          <label class="radio-option">
+            <input
+              type="radio"
+              name="backendUrl"
+              value="https://worklogs-wheat.vercel.app/"
+            />
+            <span>
+              <strong>Production</strong>
+              <small>https://worklogs-wheat.vercel.app/</small>
+            </span>
+          </label>
+        </div>
 
         <label>Excel file</label>
         <div class="file-path-row">
@@ -34,19 +51,14 @@
           <button type="button" id="grantExcelAccess" class="ghost-button" hidden>
             Grant access
           </button>
-          <button type="button" id="clearExcelFile" class="ghost-button" hidden>
-            Clear
-          </button>
         </div>
         <p id="selectedFile" class="full-path" title=""></p>
-        <p class="hint">
-          The selected file is remembered so the AI can read it later without
-          re-picking. Your browser may ask once per session to confirm access.
-        </p>
 
-        <button type="submit">Save</button>
+        <div class="form-actions">
+          <button type="submit">Save</button>
+          <p id="status" role="status"></p>
+        </div>
       </form>
-      <p id="status" role="status"></p>
     </main>
     <script type="module" src="options.js"></script>
   </body>

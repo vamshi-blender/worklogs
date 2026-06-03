@@ -39,7 +39,7 @@ const toolDebugPanel = document.querySelector("#toolDebugPanel");
 const defaultMessages = [
   {
     role: "assistant",
-    content: "Ready. I am connected to the backend you configure in extension settings.",
+    content: "Hello, I'm your **Worklog Assistant**\nHow can I help you today?",
   },
 ];
 
