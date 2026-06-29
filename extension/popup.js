@@ -11,8 +11,19 @@ const MY_ISSUES_VIEW_ID = "05072022-184841377-993a07eb-3b63-4ecf-acc8-49f5cf180f
 const WORKLOG_APP_ID = "07022021-220225896-25e3fa6f-ac18-4835-8437-f0f460b9062f";
 const WORKSPACE_ID = "03012021-192624661-c4d2d235-e371-4983-973f-c82b074f9b21";
 const ORGANIZATION_ID = "29102019-093434548-a4fe41b0-1fd0-489a-ac08-a29b98883143";
+const LEAVE_APPLICATION_APP_ID = "05062020-161245045-ec6b6933-5899-4b4f-b51f-d273fe01e07d";
+const LEAVE_APPLICATION_WORKSPACE_ID = "13032020-124814289-77ce2fcd-ffe2-444f-ab91-cc4596c5cbbb";
+const LEAVE_APPLICATION_SERIAL_ELEMENT_ID = "28072020-184101534-7e4d59af-1a1e-4d62-ae55-98d37e956f74";
+const EMPLOYEE_MASTER_TABLE_ID = "17052021-230725540-64fa3900-8f24-42d0-a2af-738bcb12bfb6";
+const EMPLOYEE_MASTER_FUNCTION_ID = "22072021-015736955-0ac9e1b7-93b7-46b7-8bc1-56ef83448dc3";
+const LEAVE_BALANCE_TABLE_ID = "31032020-103841638-57a5ed0e-0871-407b-81f4-071717296418";
+const LEAVE_BALANCE_FUNCTION_ID = "12052020-111746884-c0034d27-e061-45cd-b830-4e52e9645b5b";
+const LEAVE_CALENDAR_SOURCE_ID = "11072022-110212853-41b30def-53c2-4d22-9703-67fefa42cd0f";
+const LEAVE_CALENDAR_REFERENCE_ID = "11072022-111034394-31d0cbbc-afc5-4682-adf6-e968b014a035";
 const CHAT_MESSAGES_KEY = "workupdateChatMessages";
 const PENDING_WORKLOG_ACTIONS_KEY = "workupdatePendingWorklogActions";
+const PENDING_PMS_ACTIONS_KEY = "workupdatePendingPmsActions";
+const PENDING_PMS_LOOKUPS_KEY = "workupdatePendingPmsLookups";
 const DEBUG_TOOLS_KEY = "workupdateDebugTools";
 const MAX_DEBUG_EVENTS = 20;
 
@@ -47,8 +58,11 @@ let quixyToken = "";
 let currentPmsViewId = "";
 let messages = [...defaultMessages];
 let pendingWorklogActions = null;
+let pendingPmsActions = null;
+let pendingPmsLookups = null;
 let pmsLoginGate = null;
 let pmsLoginPollId = 0;
+let cachedQuixyUser = null;
 // When the selected Excel file can't be read in the chat path (permission not
 // re-granted this session, file moved, etc.), we surface an inline card so the
 // user can re-grant from a real click gesture without leaving for Settings.
@@ -138,10 +152,22 @@ form.addEventListener("submit", async (event) => {
         result.worklogDrafts ||
         result.worklogDraft,
     );
+    const returnedPmsActions = normalizePmsActions(result.pmsActions || result.pmsAction);
+    const returnedPmsLookups = normalizePmsLookups(
+      result.pmsLookupRequests || result.pmsLookupRequest,
+    );
 
-    if (returnedActions.length > 0) {
+    if (
+      returnedActions.length > 0 ||
+      returnedPmsActions.length > 0 ||
+      returnedPmsLookups.length > 0
+    ) {
       await saveChatMessages();
-      await executeAiWorklogActions(returnedActions);
+      await executeAiPmsOperations({
+        worklogActions: returnedActions,
+        pmsActions: returnedPmsActions,
+        pmsLookups: returnedPmsLookups,
+      });
     } else {
       await saveChatMessages();
     }
@@ -209,7 +235,7 @@ function startPmsLoginPolling() {
     stopPmsLoginPolling();
     pmsLoginGate = {
       status: "ready",
-      text: "PMS session detected. Continue to execute the approved worklog action(s).",
+      text: "PMS session detected. Continue to execute the approved PMS operation.",
     };
     renderMessages();
   }, 3000);
@@ -245,18 +271,27 @@ async function openOrFocusPms() {
 }
 
 async function continueAfterPmsLogin() {
-  if (!pendingWorklogActions || pmsLoginGate?.status !== "ready") {
+  if (
+    (!pendingWorklogActions && !pendingPmsActions && !pendingPmsLookups) ||
+    pmsLoginGate?.status !== "ready"
+  ) {
     return;
   }
 
   clearPmsLoginGate();
-  renderMessages(`Creating ${formatWorklogCount(pendingWorklogActions)}...`);
+  renderMessages("Continuing PMS operation...");
   setChatBusy(true);
 
   try {
-    await createWorklogsFromAiActions(pendingWorklogActions);
+    await runPmsOperations({
+      worklogActions: pendingWorklogActions || [],
+      pmsActions: pendingPmsActions || [],
+      pmsLookups: pendingPmsLookups || [],
+    });
     pendingWorklogActions = null;
-    await savePendingWorklogActions();
+    pendingPmsActions = null;
+    pendingPmsLookups = null;
+    await savePendingPmsOperations();
     renderMessages();
   } catch {
     renderMessages();
@@ -301,6 +336,7 @@ async function detectToken(options = {}) {
 
     quixyToken = result.accessToken;
     currentPmsViewId = result.viewId || "";
+    cachedQuixyUser = null;
     await chrome.storage.session.set({ quixyAccessToken: quixyToken });
 
     const currentUser = await fetchCurrentUserSummary(result);
@@ -341,25 +377,57 @@ async function createWorklog(event) {
   }
 }
 
-async function executeAiWorklogActions(actionOrActions) {
-  const actions = normalizeWorklogActions(actionOrActions);
+async function executeAiPmsOperations({ worklogActions = [], pmsActions = [], pmsLookups = [] }) {
+  const normalizedWorklogs = normalizeWorklogActions(worklogActions);
+  const normalizedActions = normalizePmsActions(pmsActions);
+  const normalizedLookups = normalizePmsLookups(pmsLookups);
 
-  if (actions.length === 0) {
+  if (
+    normalizedWorklogs.length === 0 &&
+    normalizedActions.length === 0 &&
+    normalizedLookups.length === 0
+  ) {
     return;
   }
 
   const hasToken = await detectToken({ quiet: true, openIfMissing: false });
 
   if (!hasToken) {
-    pendingWorklogActions = actions;
-    await savePendingWorklogActions();
+    pendingWorklogActions = normalizedWorklogs.length ? normalizedWorklogs : null;
+    pendingPmsActions = normalizedActions.length ? normalizedActions : null;
+    pendingPmsLookups = normalizedLookups.length ? normalizedLookups : null;
+    await savePendingPmsOperations();
     await startPmsLoginGate();
     return;
   }
 
   pendingWorklogActions = null;
-  await savePendingWorklogActions();
-  await createWorklogsFromAiActions(actions);
+  pendingPmsActions = null;
+  pendingPmsLookups = null;
+  await savePendingPmsOperations();
+  await runPmsOperations({
+    worklogActions: normalizedWorklogs,
+    pmsActions: normalizedActions,
+    pmsLookups: normalizedLookups,
+  });
+}
+
+async function runPmsOperations({ worklogActions = [], pmsActions = [], pmsLookups = [] }) {
+  const normalizedWorklogs = normalizeWorklogActions(worklogActions);
+  const normalizedActions = normalizePmsActions(pmsActions);
+  const normalizedLookups = normalizePmsLookups(pmsLookups);
+
+  if (normalizedWorklogs.length > 0) {
+    await createWorklogsFromAiActions(normalizedWorklogs);
+  }
+
+  if (normalizedActions.length > 0) {
+    await executeManifestActions(normalizedActions);
+  }
+
+  if (normalizedLookups.length > 0) {
+    await executePmsLookups(normalizedLookups);
+  }
 }
 
 async function createWorklogsFromAiActions(actionOrActions) {
@@ -428,6 +496,137 @@ async function createWorklogsFromAiActions(actionOrActions) {
   }
 }
 
+async function executeManifestActions(actions) {
+  const normalizedActions = normalizePmsActions(actions);
+
+  if (normalizedActions.length === 0) {
+    return;
+  }
+
+  const savedRecords = [];
+
+  messages.push({
+    role: "assistant",
+    content:
+      normalizedActions.length === 1
+        ? `Executing ${formatPmsActionName(normalizedActions[0].actionName)}...`
+        : `Executing ${normalizedActions.length} PMS actions...`,
+  });
+  await saveChatMessages();
+  renderMessages();
+
+  try {
+    for (let index = 0; index < normalizedActions.length; index += 1) {
+      const action = normalizedActions[index];
+      const prefix =
+        normalizedActions.length === 1
+          ? ""
+          : `${formatPmsActionName(action.actionName)} ${index + 1}/${normalizedActions.length}: `;
+      const saved = await executeManifestAction(action, {
+        onStatus(status) {
+          messages[messages.length - 1] = {
+            role: "assistant",
+            content: `${prefix}${status}`,
+          };
+          renderMessages();
+        },
+      });
+      savedRecords.push(saved);
+    }
+
+    messages[messages.length - 1] = {
+      role: "assistant",
+      content: formatPmsActionSuccessMessage(savedRecords),
+    };
+    await saveChatMessages();
+  } catch (error) {
+    messages[messages.length - 1] = {
+      role: "assistant",
+      content:
+        error instanceof Error
+          ? `I could not complete the PMS action: ${error.message}`
+          : "I could not complete the PMS action.",
+    };
+    await saveChatMessages();
+    throw error;
+  }
+}
+
+async function executeManifestAction(action, { onStatus }) {
+  if (action.actionName === "create_leave_application") {
+    return saveLeaveApplication({
+      ...action.fields,
+      onStatus,
+    });
+  }
+
+  throw new Error(`Unsupported PMS action: ${action.actionName}`);
+}
+
+async function executePmsLookups(lookups) {
+  const normalizedLookups = normalizePmsLookups(lookups);
+
+  if (normalizedLookups.length === 0) {
+    return;
+  }
+
+  messages.push({
+    role: "assistant",
+    content:
+      normalizedLookups.length === 1
+        ? `Checking ${formatPmsLookupName(normalizedLookups[0].resolverName)}...`
+        : `Checking ${normalizedLookups.length} PMS lookups...`,
+  });
+  await saveChatMessages();
+  renderMessages();
+
+  try {
+    const results = [];
+
+    for (const lookup of normalizedLookups) {
+      results.push(await executePmsLookup(lookup));
+    }
+
+    messages[messages.length - 1] = {
+      role: "assistant",
+      content: results.map(formatPmsLookupResult).join("\n\n"),
+    };
+    await saveChatMessages();
+  } catch (error) {
+    messages[messages.length - 1] = {
+      role: "assistant",
+      content:
+        error instanceof Error
+          ? `I could not complete the PMS lookup: ${error.message}`
+          : "I could not complete the PMS lookup.",
+    };
+    await saveChatMessages();
+    throw error;
+  }
+}
+
+async function executePmsLookup(lookup) {
+  const employeeCode = lookup.params?.employeeCode || (await resolveEmployeeCode());
+
+  if (lookup.resolverName === "getLeaveBalance") {
+    return {
+      resolverName: lookup.resolverName,
+      employeeCode,
+      data: await fetchLeaveBalance(employeeCode),
+    };
+  }
+
+  if (lookup.resolverName === "getLeaveCalendar") {
+    return {
+      resolverName: lookup.resolverName,
+      employeeCode,
+      data: await fetchLeaveCalendar(employeeCode),
+    };
+  }
+
+  throw new Error(`Unsupported PMS lookup: ${lookup.resolverName}`);
+}
+
 function normalizeWorklogActions(value) {
   if (!value) {
     return [];
@@ -440,6 +639,50 @@ function normalizeWorklogActions(value) {
   return isWorklogAction(value) ? [value] : [];
 }
 
+function normalizePmsActions(value) {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.filter(isPmsAction);
+  }
+
+  return isPmsAction(value) ? [value] : [];
+}
+
+function isPmsAction(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    value.actionName === "create_leave_application" &&
+    value.fields &&
+    typeof value.fields === "object"
+  );
+}
+
+function normalizePmsLookups(value) {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.filter(isPmsLookup);
+  }
+
+  return isPmsLookup(value) ? [value] : [];
+}
+
+function isPmsLookup(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    ["getLeaveBalance", "getLeaveCalendar"].includes(value.resolverName) &&
+    value.params &&
+    typeof value.params === "object"
+  );
+}
+
 function isWorklogAction(value) {
   return (
     value &&
@@ -450,11 +693,6 @@ function isWorklogAction(value) {
     typeof value.description === "string" &&
     Number.isFinite(Number(value.hours))
   );
-}
-
-function formatWorklogCount(draftOrDrafts) {
-  const count = normalizeWorklogActions(draftOrDrafts).length;
-  return count === 1 ? "worklog" : `${count} worklogs`;
 }
 
 function formatCreatedWorklogsMessage(savedRecords) {
@@ -493,6 +731,8 @@ async function readChatStream(response, onDelta, onToolDebug) {
     worklogActions: [],
     worklogDraft: null,
     worklogDrafts: [],
+    pmsActions: [],
+    pmsLookupRequests: [],
   };
 
   while (true) {
@@ -530,6 +770,10 @@ async function readChatStream(response, onDelta, onToolDebug) {
           worklogDrafts: Array.isArray(parsed.worklogDrafts)
             ? parsed.worklogDrafts
             : [],
+          pmsActions: Array.isArray(parsed.pmsActions) ? parsed.pmsActions : [],
+          pmsLookupRequests: Array.isArray(parsed.pmsLookupRequests)
+            ? parsed.pmsLookupRequests
+            : [],
         };
       } else if (parsed.type === "error") {
         throw new Error(parsed.error || "The backend stream failed.");
@@ -553,6 +797,10 @@ async function readChatStream(response, onDelta, onToolDebug) {
         worklogDrafts: Array.isArray(parsed.worklogDrafts)
           ? parsed.worklogDrafts
           : [],
+        pmsActions: Array.isArray(parsed.pmsActions) ? parsed.pmsActions : [],
+        pmsLookupRequests: Array.isArray(parsed.pmsLookupRequests)
+          ? parsed.pmsLookupRequests
+          : [],
       };
     } else if (parsed?.type === "error") {
       throw new Error(parsed.error || "The backend stream failed.");
@@ -567,6 +815,8 @@ async function readChatStream(response, onDelta, onToolDebug) {
     result.worklogActions.length === 0 &&
     !result.worklogDraft &&
     result.worklogDrafts.length === 0 &&
+    result.pmsActions.length === 0 &&
+    result.pmsLookupRequests.length === 0 &&
     rawText.trim().startsWith("{")
   ) {
     return JSON.parse(rawText);
@@ -747,6 +997,232 @@ async function saveWorklog({ issueId, worklogDate, hours, category, description,
   };
 }
 
+async function saveLeaveApplication({
+  leaveType,
+  halfDay,
+  halfDayType,
+  fromDate,
+  toDate,
+  reason,
+  contactNumber,
+  acknowledgment,
+  onStatus,
+}) {
+  onStatus("Preparing leave application...");
+  await detectToken({ quiet: true });
+
+  if (!quixyToken) {
+    throw new Error("Login token is not available yet.");
+  }
+
+  const normalizedHalfDay = leaveType === "Optional Leave" ? "No" : halfDay;
+  const normalizedHalfDayType = normalizedHalfDay === "Yes" ? halfDayType : null;
+
+  if (normalizedHalfDay === "Yes" && !normalizedHalfDayType) {
+    throw new Error("Half Day Type is required when Half Day is Yes.");
+  }
+
+  if (!acknowledgment) {
+    throw new Error("Leave application acknowledgment must be accepted before submit.");
+  }
+
+  assertLeaveDatePolicy(fromDate, toDate);
+
+  const noOfDays = calculateLeaveNoOfDays(fromDate, toDate, normalizedHalfDay);
+  const rawDayCount = calculateInclusiveDayCount(fromDate, toDate);
+  const employeeCode = await resolveEmployeeCode();
+
+  onStatus("Resolving employee details...");
+  const [applicationId, employee, balance] = await Promise.all([
+    fetchNextLeaveApplicationId(),
+    fetchEmployeeMaster(employeeCode),
+    fetchLeaveBalance(employeeCode),
+  ]);
+
+  if (leaveType === "PL" && Number(balance.BalanceLeaves || 0) < noOfDays) {
+    throw new Error(
+      `PL balance is ${balance.BalanceLeaves || 0}, but this request needs ${noOfDays} day(s).`,
+    );
+  }
+
+  const now = new Date();
+  const payload = {
+    "Application Id": applicationId,
+    "Application Date": toLeaveUtcMidnight(getLocalDate()),
+    "Employee Id": employeeCode,
+    "Full Name": employee.FullName || "",
+    "Date of Joining": employee.DateOfJoining || "",
+    "Employee Name User": null,
+    DOB: employee.DOB || "",
+    "Employee Code": employeeCode,
+    Designation: employee.Designation || "",
+    "Attendance Id": null,
+    "Attendance Id Grid": [],
+    "Rich Text": getLeaveRichTextNote(),
+    "Entitled Leaves": balance.EntitledLeaves || "",
+    "Used Leaves": balance.UsedLeaves || "",
+    "Balance Leaves": balance.BalanceLeaves || "",
+    "Optional Balance": balance.OptionalBalance || "",
+    "Optional Leaves Track": balance.OptionalLeavesTrack || "",
+    "Used Optional": balance.UsedOptional || "",
+    "Employee Code Leave Balance": employeeCode,
+    "Leave Tyoe": leaveType,
+    "Half Day": normalizedHalfDay,
+    "Half Day Type": normalizedHalfDayType || "",
+    Reason: reason,
+    "Contact Number": contactNumber || "",
+    "File Upload if any": [],
+    "Employee Check Box": Boolean(acknowledgment),
+    "Leave Dates New ds": buildDateRangeTriple(fromDate, toDate),
+    "No of Days": noOfDays,
+    "Half Day number": normalizedHalfDay === "Yes" ? 0.5 : "",
+    "Number new ds": rawDayCount,
+    "Employee Code new ds": employeeCode,
+    "Leave Dates New ds From Date": toLeaveUtcMidnight(fromDate),
+    "Leave Dates New ds To Date": toLeaveUtcMidnight(toDate),
+    "From Date Calculate": getMonthNumber(fromDate),
+    "To Date Calculate": getMonthNumber(toDate),
+    "From DateOff Calculate": getDayOfMonth(fromDate),
+    "To Dateoff Calculate": getDayOfMonth(toDate),
+    "Date Time Stamp": formatDateTime(now),
+    "Proceed To Loss Of Pay": "",
+    "Manager Name": null,
+    "Manager Email Id": null,
+    "Manager Employee Id": null,
+    "Manager Remarks": "",
+    "Manager Checkbox": false,
+    "HR Name": null,
+    "HR Email Id": null,
+    "HR Employee Id": null,
+    "HR Date Time Stamp": formatDateTime(now),
+    "HR Remarks": "",
+    _AppId: LEAVE_APPLICATION_APP_ID,
+    _AppName: "Leave Application",
+    _CurrentStepNumber: 1,
+    _WorkSpaceId: LEAVE_APPLICATION_WORKSPACE_ID,
+    _OrganizationId: ORGANIZATION_ID,
+    _NextGroupName: "Manager Approval",
+    _IsCompleted: false,
+    _ExternalApiIds: "",
+    _InternalApiIds: "",
+    _DataFunctionIds: "",
+    _UserFunctionIds: "",
+    _UserId: await resolveUserId(),
+    _Username: await resolveUsername(),
+    _FullName: await resolveFullName(),
+    _UpdatedUserId: "",
+    _UpdatedUsername: "",
+    _UpdatedEmailId: "",
+    _UserEmailId: await resolveUserEmail(),
+    _CreatedLocation: "",
+    _NextStepUsers: "",
+    _UpdatedLocation: "",
+    _WorkFlowAction: "Start - Submit",
+  };
+
+  onStatus("Submitting leave application...");
+  const saved = await requestJson(
+    `${API_ORIGIN}/api/App/SaveAppData?appName=Leave Application&users=&startDate=null&dueDate=null`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+
+  if (!saved.Success) {
+    throw new Error(saved.ErrorMessage || "Leave application save failed.");
+  }
+
+  return {
+    actionName: "create_leave_application",
+    label: `${leaveType} leave`,
+    recordId: saved.Data,
+    applicationId,
+  };
+}
+
+async function fetchNextLeaveApplicationId() {
+  return requestJson(
+    `${API_ORIGIN}/api/App/GetNextSerialNumber?appElementId=${LEAVE_APPLICATION_SERIAL_ELEMENT_ID}&appId=${LEAVE_APPLICATION_APP_ID}&organizationId=${ORGANIZATION_ID}`,
+  );
+}
+
+async function fetchEmployeeMaster(employeeCode) {
+  const result = await requestJson(`${API_ORIGIN}/api/DataTable/GetReferencedDataTableData`, {
+    method: "POST",
+    body: JSON.stringify({
+      DataTableId: EMPLOYEE_MASTER_TABLE_ID,
+      DataTableFunctionId: EMPLOYEE_MASTER_FUNCTION_ID,
+      ReferencedElements: "Date of Joining,Department,Designation,DOB,Full Name",
+      DataTableDataReferenceDataDTOs: [
+        {
+          ReferenceName: "Employee Code",
+          IsFocused: true,
+          Value: employeeCode,
+        },
+      ],
+    }),
+  });
+
+  return mapNameValueRow(result);
+}
+
+async function fetchLeaveBalance(employeeCode) {
+  const result = await requestJson(`${API_ORIGIN}/api/DataTable/GetReferencedDataTableData`, {
+    method: "POST",
+    body: JSON.stringify({
+      DataTableId: LEAVE_BALANCE_TABLE_ID,
+      DataTableFunctionId: LEAVE_BALANCE_FUNCTION_ID,
+      ReferencedElements:
+        "Balance Leaves,Entitled Leaves,Optional Balance,Optional Leaves Track,Used Leaves,Used Optional",
+      DataTableDataReferenceDataDTOs: [
+        {
+          ReferenceName: "Employee Code",
+          IsFocused: true,
+          Value: employeeCode,
+        },
+      ],
+    }),
+  });
+
+  const row = mapNameValueRow(result);
+  return {
+    BalanceLeaves: row["Balance Leaves"],
+    EntitledLeaves: row["Entitled Leaves"],
+    OptionalBalance: row["Optional Balance"],
+    OptionalLeavesTrack: row["Optional Leaves Track"],
+    UsedLeaves: row["Used Leaves"],
+    UsedOptional: row["Used Optional"],
+  };
+}
+
+async function fetchLeaveCalendar(employeeCode) {
+  const result = await requestJson(`${API_ORIGIN}/api/Datasource/GetReferencedDataSourceData`, {
+    method: "POST",
+    body: JSON.stringify({
+      DataSourceId: LEAVE_CALENDAR_SOURCE_ID,
+      DataSourceReferenceId: LEAVE_CALENDAR_REFERENCE_ID,
+      OutputColumns: "Boolean,Color,Date,Name",
+      DataSourceReferenceConditions: [
+        {
+          DataSourceCollectionConditionLabelName: "Employee Code",
+          IsFocused: true,
+          Value: employeeCode,
+        },
+      ],
+    }),
+  });
+
+  return Array.isArray(result)
+    ? result.map((row) => Object.fromEntries(row.map((item) => [item.Name, item.Value])))
+    : [];
+}
+
+function mapNameValueRow(result) {
+  const firstRow = Array.isArray(result) ? result[0] : [];
+  return Object.fromEntries(firstRow.map((item) => [item.Name, item.Value]));
+}
+
 async function getQuixyTab() {
   const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -788,6 +1264,59 @@ async function fetchCurrentUserSummary(tokenResult) {
   } catch {
     return tokenResult.name || tokenResult.email || "logged-in user";
   }
+}
+
+async function fetchCurrentUserDetailsCached() {
+  if (!cachedQuixyUser) {
+    cachedQuixyUser = await requestJson(`${API_ORIGIN}/api/User/GetUserDetails`);
+  }
+
+  return cachedQuixyUser;
+}
+
+async function resolveEmployeeCode() {
+  const user = await fetchCurrentUserDetailsCached();
+  const candidates = [
+    user.EmployeeCode,
+    user["Employee Code"],
+    user.EmployeeId,
+    user["Employee Id"],
+    user["Employee ID"],
+    user.EmpCode,
+    user.EmployeeNumber,
+    user["Employee Number"],
+    user.UserName,
+  ]
+    .map((value) => (value == null ? "" : String(value).trim()))
+    .filter(Boolean);
+
+  const employeeCode = candidates.find((value) => /^E\d+$/i.test(value));
+
+  if (!employeeCode) {
+    throw new Error("Could not resolve Employee Code from the logged-in PMS user.");
+  }
+
+  return employeeCode.toUpperCase();
+}
+
+async function resolveUserId() {
+  const user = await fetchCurrentUserDetailsCached();
+  return user.UserId || "";
+}
+
+async function resolveUsername() {
+  const user = await fetchCurrentUserDetailsCached();
+  return user.EmailId || user.UserName || "";
+}
+
+async function resolveUserEmail() {
+  const user = await fetchCurrentUserDetailsCached();
+  return user.EmailId || user.UserName || "";
+}
+
+async function resolveFullName() {
+  const user = await fetchCurrentUserDetailsCached();
+  return [user.FirstName, user.LastName].filter(Boolean).join(" ").trim() || user.Name || "";
 }
 
 async function fetchIssueDetails(issueId) {
@@ -1062,12 +1591,16 @@ async function loadChatMessages() {
   const stored = await chrome.storage.local.get([
     CHAT_MESSAGES_KEY,
     PENDING_WORKLOG_ACTIONS_KEY,
+    PENDING_PMS_ACTIONS_KEY,
+    PENDING_PMS_LOOKUPS_KEY,
     "workupdatePendingWorklogDraft",
     DEBUG_TOOLS_KEY,
   ]);
   const storedMessages = stored[CHAT_MESSAGES_KEY];
   const storedActions =
     stored[PENDING_WORKLOG_ACTIONS_KEY] || stored.workupdatePendingWorklogDraft;
+  const storedPmsActions = stored[PENDING_PMS_ACTIONS_KEY];
+  const storedPmsLookups = stored[PENDING_PMS_LOOKUPS_KEY];
   debugToolsEnabled = Boolean(stored[DEBUG_TOOLS_KEY]);
 
   if (Array.isArray(storedMessages) && storedMessages.length > 0) {
@@ -1083,6 +1616,16 @@ async function loadChatMessages() {
     pendingWorklogActions = actions.length > 0 ? actions : null;
   }
 
+  if (storedPmsActions && typeof storedPmsActions === "object") {
+    const actions = normalizePmsActions(storedPmsActions);
+    pendingPmsActions = actions.length > 0 ? actions : null;
+  }
+
+  if (storedPmsLookups && typeof storedPmsLookups === "object") {
+    const lookups = normalizePmsLookups(storedPmsLookups);
+    pendingPmsLookups = lookups.length > 0 ? lookups : null;
+  }
+
   renderToolDebugPanel();
 }
 
@@ -1095,32 +1638,21 @@ async function saveChatMessages() {
 async function startNewChat() {
   messages = [...defaultMessages];
   pendingWorklogActions = null;
+  pendingPmsActions = null;
+  pendingPmsLookups = null;
   // Excel access is a file/origin-level fact, not per-conversation, so it is not
   // reset here. A persisted grant carries across new chats and sessions.
   clearPmsLoginGate();
   await chrome.storage.local.remove([
     CHAT_MESSAGES_KEY,
     PENDING_WORKLOG_ACTIONS_KEY,
+    PENDING_PMS_ACTIONS_KEY,
+    PENDING_PMS_LOOKUPS_KEY,
     "workupdatePendingWorklogDraft",
   ]);
   renderMessages();
   showScreen("chat");
   input.focus();
-}
-
-async function savePendingWorklogActions() {
-  if (pendingWorklogActions) {
-    await chrome.storage.local.set({
-      [PENDING_WORKLOG_ACTIONS_KEY]: pendingWorklogActions,
-    });
-    await chrome.storage.local.remove("workupdatePendingWorklogDraft");
-    return;
-  }
-
-  await chrome.storage.local.remove([
-    PENDING_WORKLOG_ACTIONS_KEY,
-    "workupdatePendingWorklogDraft",
-  ]);
 }
 
 function getLocalDate() {
@@ -1273,6 +1805,198 @@ function formatDateTime(date) {
 
 function asString(value) {
   return value == null ? "" : String(value);
+}
+
+async function savePendingPmsOperations() {
+  const updates = {};
+  const removals = ["workupdatePendingWorklogDraft"];
+
+  if (pendingWorklogActions) {
+    updates[PENDING_WORKLOG_ACTIONS_KEY] = pendingWorklogActions;
+  } else {
+    removals.push(PENDING_WORKLOG_ACTIONS_KEY);
+  }
+
+  if (pendingPmsActions) {
+    updates[PENDING_PMS_ACTIONS_KEY] = pendingPmsActions;
+  } else {
+    removals.push(PENDING_PMS_ACTIONS_KEY);
+  }
+
+  if (pendingPmsLookups) {
+    updates[PENDING_PMS_LOOKUPS_KEY] = pendingPmsLookups;
+  } else {
+    removals.push(PENDING_PMS_LOOKUPS_KEY);
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await chrome.storage.local.set(updates);
+  }
+
+  if (removals.length > 0) {
+    await chrome.storage.local.remove(removals);
+  }
+}
+
+function assertLeaveDatePolicy(fromDate, toDate) {
+  if (fromDate > toDate) {
+    throw new Error("Leave start date must be on or before the end date.");
+  }
+
+  if (getMonthNumber(fromDate) !== getMonthNumber(toDate) || getDayOfMonth(toDate) > 25) {
+    throw new Error(
+      "Leave cannot cross a month or go past the 25th. Split it into separate applications.",
+    );
+  }
+}
+
+function calculateLeaveNoOfDays(fromDate, toDate, halfDay) {
+  return halfDay === "Yes" ? 0.5 : calculateInclusiveDayCount(fromDate, toDate);
+}
+
+function calculateInclusiveDayCount(fromDate, toDate) {
+  const start = parseIsoDateParts(fromDate);
+  const end = parseIsoDateParts(toDate);
+  const startUtc = Date.UTC(start.year, start.month - 1, start.day);
+  const endUtc = Date.UTC(end.year, end.month - 1, end.day);
+  return Math.floor((endUtc - startUtc) / 86_400_000) + 1;
+}
+
+function buildDateRangeTriple(fromDate, toDate) {
+  const labels = [];
+  const cursor = parseIsoDateParts(fromDate);
+  const end = parseIsoDateParts(toDate);
+  let cursorUtc = Date.UTC(cursor.year, cursor.month - 1, cursor.day);
+  const endUtc = Date.UTC(end.year, end.month - 1, end.day);
+
+  while (cursorUtc <= endUtc) {
+    labels.push(formatLeaveDateLabel(new Date(cursorUtc)));
+    cursorUtc += 86_400_000;
+  }
+
+  return [labels[0], labels[labels.length - 1], labels];
+}
+
+function toLeaveUtcMidnight(dateValue) {
+  const { year, month, day } = parseIsoDateParts(dateValue);
+  const utcMillis = Date.UTC(year, month - 1, day, 0, 0, 0) - 330 * 60 * 1000;
+  const shifted = new Date(utcMillis);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(
+    shifted.getUTCDate(),
+  )}T${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:00.00`;
+}
+
+function getMonthNumber(dateValue) {
+  return parseIsoDateParts(dateValue).month;
+}
+
+function getDayOfMonth(dateValue) {
+  return parseIsoDateParts(dateValue).day;
+}
+
+function parseIsoDateParts(dateValue) {
+  const match = String(dateValue).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) {
+    throw new Error(`Invalid date: ${dateValue}`);
+  }
+
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+  };
+}
+
+function formatLeaveDateLabel(date) {
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][
+    date.getUTCMonth()
+  ];
+  return `${day}-${month}-${date.getUTCFullYear()}`;
+}
+
+function getLeaveRichTextNote() {
+  return [
+    '<p><span style="color: rgba(255, 0, 0, 1)">For any request the <strong>end date must not go',
+    "beyond the 25th of the same month</strong> and <strong>cannot extend into the next month</strong>.</span></p>",
+    "<p>Example: If a request spans 17-May-2025 to 11-Jun-2025, split it as App1 17-25 May, App2 26-31 May,",
+    "App3 01-11 Jun.</p>",
+  ].join(" ");
+}
+
+function formatPmsActionName(actionName) {
+  if (actionName === "create_leave_application") {
+    return "leave application";
+  }
+
+  return actionName;
+}
+
+function formatPmsActionSuccessMessage(savedRecords) {
+  if (savedRecords.length === 1) {
+    const [saved] = savedRecords;
+    return `Leave application submitted. Application: ${saved.applicationId}. Record: ${saved.recordId}`;
+  }
+
+  return `Completed ${savedRecords.length} PMS actions:\n\n${savedRecords
+    .map((saved, index) => `${index + 1}. ${saved.label || saved.actionName} - ${saved.recordId}`)
+    .join("\n")}`;
+}
+
+function formatPmsLookupName(resolverName) {
+  if (resolverName === "getLeaveBalance") {
+    return "leave balance";
+  }
+
+  if (resolverName === "getLeaveCalendar") {
+    return "leave calendar";
+  }
+
+  return resolverName;
+}
+
+function formatPmsLookupResult(result) {
+  if (result.resolverName === "getLeaveBalance") {
+    const balance = result.data;
+    return [
+      `Leave balance for ${result.employeeCode}:`,
+      `- PL balance: ${balance.BalanceLeaves ?? ""}`,
+      `- Entitled leaves: ${balance.EntitledLeaves ?? ""}`,
+      `- Used leaves: ${balance.UsedLeaves ?? ""}`,
+      `- Optional balance: ${balance.OptionalBalance ?? ""}`,
+      `- Used optional: ${balance.UsedOptional ?? ""}`,
+    ].join("\n");
+  }
+
+  if (result.resolverName === "getLeaveCalendar") {
+    const rows = Array.isArray(result.data) ? result.data.slice(0, 20) : [];
+
+    if (rows.length === 0) {
+      return `No leave calendar entries found for ${result.employeeCode}.`;
+    }
+
+    return `Leave calendar for ${result.employeeCode}:\n\n${rows
+      .map((row, index) => `${index + 1}. ${formatCalendarDate(row.Date)} - ${row.Name || ""}`)
+      .join("\n")}`;
+  }
+
+  return JSON.stringify(result.data, null, 2);
+}
+
+function formatCalendarDate(value) {
+  if (!value) {
+    return "";
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return formatLeaveDateLabel(date);
 }
 
 function setDefaultDate() {

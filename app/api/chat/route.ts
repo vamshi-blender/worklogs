@@ -223,6 +223,39 @@ const worklogDraftSchema = z.object({
 
 type WorklogDraft = z.infer<typeof worklogDraftSchema>;
 
+const leaveApplicationFieldsSchema = z.object({
+  leaveType: z.enum(["PL", "LOP", "Optional Leave"]),
+  halfDay: z.enum(["Yes", "No"]),
+  halfDayType: z.enum(["First Half", "Second Half"]).nullable(),
+  fromDate: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD."),
+  toDate: z
+    .string()
+    .trim()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD."),
+  reason: z.string().trim().min(1).max(2000),
+  contactNumber: z.string().trim().max(60).nullable(),
+  acknowledgment: z.boolean(),
+});
+
+const pmsActionSchema = z.object({
+  actionName: z.enum(["create_leave_application"]),
+  fields: leaveApplicationFieldsSchema,
+});
+
+type PmsAction = z.infer<typeof pmsActionSchema>;
+
+const pmsLookupSchema = z.object({
+  resolverName: z.enum(["getLeaveBalance", "getLeaveCalendar"]),
+  params: z.object({
+    employeeCode: z.string().trim().max(40).nullable(),
+  }),
+});
+
+type PmsLookupRequest = z.infer<typeof pmsLookupSchema>;
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -234,8 +267,16 @@ const chatAgent = new Agent({
   model: process.env.OPENAI_MODEL ?? "gpt-5.5",
   instructions: [
     "You are Workupdate Assistant inside a Chrome side panel. Be concise, practical, and action-oriented.",
-    "Active tools: get_excel_metadata, get_range_as_csv, create_worklog. Do not mention or use disabled tools.",
+    "Active tools: get_excel_metadata, get_range_as_csv, create_worklog, list_pms_capabilities, submit_pms_action, request_pms_lookup. Do not mention or use disabled tools.",
+    "When the user asks for tool names, list only the exact active tool names above. Do not present capability groups like PMS leave, PMS worklogs, or Excel as tool names. You may separately describe those as capabilities.",
+    "Distinguish tool names, action names, and resolver names: create_leave_application is a manifest actionName used with submit_pms_action, not a standalone tool; getLeaveBalance and getLeaveCalendar are resolverName values used with request_pms_lookup, not standalone tools.",
     "Use tools instead of asking avoidable questions. If the user says read from Excel, check Excel, use Excel, from sheet, today's status, what did I do today, or similar, call get_excel_metadata immediately unless the current conversation already has fresh sheet metadata.",
+    "PMS manifest capabilities are executed through generic tools, not one tool per PMS action. Use list_pms_capabilities to inspect supported manifest actions and lookups when needed.",
+    "For manifest action create_leave_application, collect these user-facing fields only: leaveType (PL, LOP, Optional Leave), halfDay (Yes/No), halfDayType when halfDay is Yes, fromDate, toDate, reason, optional contactNumber, and acknowledgment. Resolve relative dates using Current date and pass dates as YYYY-MM-DD.",
+    "Leave Application rules: Optional Leave must be full-day, so set halfDay to No and halfDayType to null. If halfDay is No, halfDayType must be null. acknowledgment must be true only when the user has agreed to the required employee checkbox/acknowledgment.",
+    "Manifest action review rule: do not call submit_pms_action immediately after first deriving details. First present the exact action details for human review and ask the user to approve or request changes.",
+    "Manifest action approval rule: call submit_pms_action only when the latest user message clearly approves the reviewed action details. The tool queues the action for the Chrome extension to execute locally with the user's PMS session; never include bearer tokens, app metadata, workflow fields, or resolver outputs.",
+    "Use request_pms_lookup for standalone PMS lookups currently supported by the manifest layer, such as leave balance or leave calendar. The extension will execute the lookup locally with the user's PMS session after this response; do not invent the lookup result.",
     "Excel workflow: 1) call get_excel_metadata, 2) choose the most likely sheet from the user's date or the Current date month, 3) call get_range_as_csv with a precise A1 range from metadata, 4) answer from the CSV only. For a date-specific question, read the relevant month sheet and find the date block in the CSV. If metadata is unavailable, tell the user the Excel access problem from the tool result.",
     "Worklog workflow: collect exactly these values: issue id, worklog date, hours, category, and log description. If the user asks to raise/log a worklog and says to read from Excel, use Excel to infer date, hours, category, and description when possible, then ask only for values still missing, usually issue id.",
     "Preserve the issue id exactly as the user provides it, except for uppercasing letters. Never change or guess the project prefix, for example do not convert QXY to QKA.",
@@ -301,6 +342,8 @@ export async function POST(request: Request) {
     excelAccessMessage: excelAccess?.message || "",
   });
   const worklogActions: WorklogDraft[] = [];
+  const pmsActions: PmsAction[] = [];
+  const pmsLookupRequests: PmsLookupRequest[] = [];
   let debugEventId = 0;
   let sendToolDebug:
     | ((event: {
@@ -379,8 +422,90 @@ export async function POST(request: Request) {
     },
   });
 
+  const listPmsCapabilities = tool({
+    name: "list_pms_capabilities",
+    description:
+      "List PMS manifest capabilities available through the generic manifest runtime. Use this when the user asks what PMS actions or standalone PMS lookups are supported.",
+    parameters: z.object({}),
+    async execute(input) {
+      return executeWithToolDebug("list_pms_capabilities", input, () => ({
+        actions: [
+          {
+            actionName: "create_leave_application",
+            description: "Apply for leave using the Quixy Leave Application form.",
+            userFields: [
+              "leaveType",
+              "halfDay",
+              "halfDayType",
+              "fromDate",
+              "toDate",
+              "reason",
+              "contactNumber",
+              "acknowledgment",
+            ],
+            reviewRequired: true,
+            localExecution: true,
+          },
+        ],
+        lookups: [
+          {
+            resolverName: "getLeaveBalance",
+            description: "Show the logged-in employee's leave balances.",
+            localExecution: true,
+          },
+          {
+            resolverName: "getLeaveCalendar",
+            description: "Show the logged-in employee's existing leave/calendar entries.",
+            localExecution: true,
+          },
+        ],
+      }));
+    },
+  });
+
+  const submitPmsAction = tool({
+    name: "submit_pms_action",
+    description:
+      "Queue one approved PMS manifest action for the Chrome extension to execute locally with the user's PMS session. This is the generic submit tool for manifest actions; do not use separate per-action submit tools. Use only after the latest user message clearly approves the reviewed action details.",
+    parameters: pmsActionSchema,
+    async execute(input) {
+      return executeWithToolDebug("submit_pms_action", input, () => {
+        pmsActions.push(input);
+
+        return {
+          status: "queued_for_extension_execution",
+          action: input,
+          nextStep:
+            "The extension should execute this PMS manifest action locally using the user's PMS session.",
+        };
+      });
+    },
+  });
+
+  const requestPmsLookup = tool({
+    name: "request_pms_lookup",
+    description:
+      "Queue a standalone PMS resolver lookup for the Chrome extension to execute locally with the user's PMS session. Use this for browse/read requests such as leave balance or leave calendar. If employeeCode is unknown, pass null so the extension can resolve the logged-in employee.",
+    parameters: pmsLookupSchema,
+    async execute(input) {
+      return executeWithToolDebug("request_pms_lookup", input, () => {
+        pmsLookupRequests.push(input);
+
+        return {
+          status: "queued_for_extension_lookup",
+          lookup: input,
+          nextStep:
+            "The extension should execute this PMS lookup locally and display the result.",
+        };
+      });
+    },
+  });
+
   const agent = chatAgent.clone({
     tools: [
+      listPmsCapabilities,
+      submitPmsAction,
+      requestPmsLookup,
       createWorklog,
       tool({
         name: "get_excel_metadata",
@@ -502,6 +627,8 @@ export async function POST(request: Request) {
                 : JSON.stringify(result.finalOutput)),
             worklogAction: worklogActions[0] || null,
             worklogActions,
+            pmsActions,
+            pmsLookupRequests,
           });
         } catch (error) {
           send({
