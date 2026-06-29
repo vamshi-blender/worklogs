@@ -1,0 +1,25 @@
+# Layer B resolver — leave balance record for a given Employee Code
+# NOTE: balance reflects PENDING applications immediately (counts submitted-but-unapproved).
+resolver: getLeaveBalance
+description: "Leave balances for an employee (entitled/used/balance + optional-leave counters)."
+queryable: true         # also useful standalone ("what's my leave balance?")
+cacheable: 120s
+inputs:
+  employeeCode: { type: string }
+via:
+  use: getReferencedDataTableData       # primitive B
+  with:
+    dataTableId: "31032020-103841638-57a5ed0e-0871-407b-81f4-071717296418"
+    functionId:  "12052020-111746884-c0034d27-e061-45cd-b830-4e52e9645b5b"
+    referenceName: "Employee Code"
+    referencedElements: "Balance Leaves,Entitled Leaves,Optional Balance,Optional Leaves Track,Used Leaves,Used Optional"
+    value: "{{input.employeeCode}}"
+output:
+  list: false
+  fields:
+    BalanceLeaves:      "Balance Leaves"
+    EntitledLeaves:     "Entitled Leaves"
+    OptionalBalance:    "Optional Balance"
+    OptionalLeavesTrack:"Optional Leaves Track"
+    UsedLeaves:         "Used Leaves"
+    UsedOptional:       "Used Optional"

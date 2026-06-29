@@ -1,0 +1,14 @@
+# Layer B resolver — server-generated Application Id (e.g. VM/LAP/30065)
+resolver: getNextApplicationId
+description: "Next serial Application Id for the Leave Application app."
+queryable: false        # write-side helper; not browsable standalone
+cacheable: false        # each call consumes/advances the counter
+via:
+  use: getNextSerialNumber              # primitive E
+  with:
+    appElementId: "28072020-184101534-7e4d59af-1a1e-4d62-ae55-98d37e956f74"
+    appId: "05062020-161245045-ec6b6933-5899-4b4f-b51f-d273fe01e07d"
+    organizationId: "29102019-093434548-a4fe41b0-1fd0-489a-ac08-a29b98883143"
+output:
+  scalar: true
+  value: "<string>"     # VM/LAP/<n>

@@ -1,0 +1,23 @@
+# Layer B resolver — employee master record for a given Employee Code
+resolver: getEmployeeMaster
+description: "Profile fields for an employee (joining date, department, designation, DOB, name)."
+queryable: false        # auto-fill / execution resolver (hidden plumbing)
+cacheable: 600s
+inputs:
+  employeeCode: { type: string }        # e.g. E1469
+via:
+  use: getReferencedDataTableData       # primitive B
+  with:
+    dataTableId: "17052021-230725540-64fa3900-8f24-42d0-a2af-738bcb12bfb6"
+    functionId:  "22072021-015736955-0ac9e1b7-93b7-46b7-8bc1-56ef83448dc3"
+    referenceName: "Employee Code"
+    referencedElements: "Date of Joining,Department,Designation,DOB,Full Name"
+    value: "{{input.employeeCode}}"
+output:
+  list: false
+  fields:                               # Name (server) -> exposed name
+    DateOfJoining: "Date of Joining"     # ISO datetime
+    Department:    "Department"
+    Designation:   "Designation"
+    DOB:           "DOB"
+    FullName:      "Full Name"

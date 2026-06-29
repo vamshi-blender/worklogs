@@ -1,0 +1,20 @@
+# Layer B resolver — list of valid Employee Codes (option list / autocomplete)
+# Same data table as getEmployeeMaster, but used in option-list mode (primitive A).
+resolver: getEmployeeCodeOptions
+description: "Browsable list of employee codes (autocomplete source)."
+queryable: true
+cacheable: 600s
+inputs:
+  search: { type: string, required: false }   # "" → full list; prefix → filtered
+via:
+  use: getDataTableDataByReference      # primitive A
+  with:
+    dataTableId: "17052021-230725540-64fa3900-8f24-42d0-a2af-738bcb12bfb6"
+    functionId:  "22072021-015736955-0ac9e1b7-93b7-46b7-8bc1-56ef83448dc3"
+    referenceName: "Employee Code"
+    referencedElements: "Date of Joining,Department,Designation,DOB,Full Name"
+    value: "{{input.search | default ''}}"
+output:
+  list: true
+  value: "AppData"                      # the employee code key
+UNVERIFIED: "Server-side pagination/limit behaviour for large lists not yet probed."

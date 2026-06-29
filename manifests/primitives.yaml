@@ -1,0 +1,112 @@
+# =============================================================================
+# Layer A — Transport primitives (generic Quixy endpoints)
+# Dumb, business-free, heavily reused. Resolvers (Layer B) reference these by
+# `use:` and supply the GUIDs/params. Expect the whole PMS to need only a handful.
+# Base URL for all: https://quixyhomeapi.kwixee.co.in
+# Auth: every call carries `Authorization: Bearer <JWT>` from the SPA/extension.
+# =============================================================================
+
+primitives:
+
+  # --- A. option list from a data table (returns KEYS, for autocomplete) -------
+  getDataTableDataByReference:
+    method: POST
+    url: /api/DataTable/GetDataTableDataByReference
+    request:
+      DataTableId: "{param.dataTableId}"
+      DataTableFunctionId: "{param.functionId}"
+      ReferencedElements: "{param.referencedElements}"   # comma-joined column names
+      DataTableDataReferenceDataDTOs:
+        - ReferenceName: "{param.referenceName}"
+          IsFocused: true
+          Value: "{param.value}"                          # "" → full key list; "E14" → filtered
+    response:
+      shape: "[{ AppData: <key> }]"                        # key column only
+      kind: option_list
+
+  # --- B. dependent column values for a chosen key (returns VALUES) ------------
+  getReferencedDataTableData:
+    method: POST
+    url: /api/DataTable/GetReferencedDataTableData
+    request:
+      DataTableId: "{param.dataTableId}"
+      DataTableFunctionId: "{param.functionId}"
+      ReferencedElements: "{param.referencedElements}"
+      DataTableDataReferenceDataDTOs:
+        - ReferenceName: "{param.referenceName}"
+          IsFocused: true
+          Value: "{param.value}"                          # the selected key
+    response:
+      shape: "[[ { Name, Value }, ... ]]"                  # one row of name/value pairs
+      kind: dependent_values
+
+  # --- C. option keys from a datasource (datasource version of A) --------------
+  getReferencedDataSourceConditionData:
+    method: POST
+    url: /api/Datasource/GetReferencedDataSourceConditionData
+    request:
+      DatasourceId: "{param.dataSourceId}"
+      DataSourceReferenceId: "{param.dataSourceReferenceId}"
+      DataSourceCollectionConditionLabelName: "{param.conditionLabel}"
+      Value: "{param.value}"
+    response:
+      shape: "[{ AppData: <key> }]"
+      kind: option_list
+
+  # --- D. datasource rows for given conditions (returns VALUE rows) ------------
+  getReferencedDataSourceData:
+    method: POST
+    url: /api/Datasource/GetReferencedDataSourceData
+    request:
+      DataSourceId: "{param.dataSourceId}"
+      DataSourceReferenceId: "{param.dataSourceReferenceId}"
+      OutputColumns: "{param.outputColumns}"               # comma-joined column names
+      DataSourceReferenceConditions:
+        - DataSourceCollectionConditionLabelName: "{param.conditionLabel}"
+          Value: "{param.value}"
+    response:
+      shape: "[[ { Name, Value }, ... ], ...]"             # many rows
+      kind: rows
+
+  # --- E. server serial-number generator ---------------------------------------
+  getNextSerialNumber:
+    method: GET
+    url: /api/App/GetNextSerialNumber
+    query:
+      appElementId: "{param.appElementId}"
+      appId: "{param.appId}"
+      organizationId: "{param.organizationId}"
+    response:
+      shape: "<string>"                                    # e.g. VM/LAP/30065
+      kind: scalar
+
+  # --- F. the form definition (the "manifest source") --------------------------
+  getAppWithPermissions:
+    method: POST
+    url: /api/App/GetAppWithPermissions
+    request:
+      appId: "{param.appId}"                               # exact body shape TBD; returns full schema+rules+workflow
+    response:
+      shape: "<app definition: AppSections, Rules, Workflow, WorkflowButtons>"
+      kind: definition
+    note: >
+      Authoring-time source of truth. A converter that reads this can emit fields,
+      enums, mandatory flags, conditional rules, and workflow without HAR diffing.
+
+  # --- G. the WRITE (create/advance a record) -----------------------------------
+  saveAppData:
+    method: POST
+    url: /api/App/SaveAppData
+    query:
+      appName: "{param.appName}"
+      users: ""
+      startDate: "null"
+      dueDate: "null"
+    request:
+      shape: "<full app payload — see actions/*.yaml payload_template>"
+    response:
+      shape: "{ Success, StatusCode, Data: <newRecordId>, AppData: <json record> }"
+      kind: write
+    note: >
+      The `_WorkFlowAction` field inside the body drives the workflow transition
+      (e.g. "Start - Submit"). Later steps reuse this endpoint with a different verb.

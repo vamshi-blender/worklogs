@@ -1,0 +1,70 @@
+# =============================================================================
+# derive.* — fixed library of pure client-side calculation helpers.
+# These run in the browser/extension; the server trusts whatever they produce.
+# Keep this a small, unit-tested set (the place "vibe coding" would otherwise creep in).
+# All observed on the Leave Application form; semantics noted from captured payloads.
+# =============================================================================
+
+helpers:
+
+  toUtcMidnight:
+    args: [localDate]                       # a calendar date in the user's TZ (IST)
+    returns: "ISO string 'YYYY-MM-DDTHH:mm:ss.00'"
+    rule: >
+      Convert local midnight to UTC by subtracting the user's offset (IST = +5:30),
+      yielding the previous day at 18:30. Format with a literal '.00' fraction.
+    examples:
+      - in: "2026-06-30"   # IST
+        out: "2026-06-29T18:30:00.00"
+      - in: "2026-07-13"
+        out: "2026-07-12T18:30:00.00"
+    note: "TZ offset comes from the auth token claim (TimeZone: India Standard Time)."
+
+  noOfDays:
+    args: [range, halfDay]
+    returns: number
+    rule: >
+      If halfDay == 'Yes' → 0.5. Otherwise the inclusive day count of the range.
+    examples:
+      - { in: "{from:30Jun, to:30Jun, halfDay:Yes}", out: 0.5 }
+      - { in: "{from:06Jul, to:07Jul, halfDay:No}",  out: 2 }
+      - { in: "{from:13Jul, to:13Jul, halfDay:No}",  out: 1 }
+    UNVERIFIED: "Whether weekends/holidays are excluded for longer ranges — only tested contiguous weekdays."
+
+  halfDayNumber:
+    args: [halfDay]
+    returns: "0.5 when halfDay=='Yes', else '' (empty string)"
+
+  dayCount:
+    args: [range]
+    returns: "inclusive number of calendar days in the range (maps to 'Number new ds')"
+    examples:
+      - { in: "30Jun..30Jun", out: 1 }
+      - { in: "06Jul..07Jul", out: 2 }
+
+  dateRangeTriple:
+    args: [range]
+    returns: "[fromLabel, toLabel, [day labels...]]  with labels formatted 'DD-MMM-YYYY'"
+    rule: "Third element lists every day in the range."
+    examples:
+      - { in: "30Jun..30Jun", out: '["30-Jun-2026","30-Jun-2026",["30-Jun-2026"]]' }
+      - { in: "06Jul..07Jul", out: '["06-Jul-2026","07-Jul-2026",["06-Jul-2026","07-Jul-2026"]]' }
+
+  month:
+    args: [date]
+    returns: "month number 1-12 (maps to 'From/To Date Calculate')"
+    examples: [{ in: "30-Jun", out: 6 }, { in: "13-Jul", out: 7 }]
+
+  dayOfMonth:
+    args: [date]
+    returns: "day of month 1-31 (maps to 'From/To DateOff Calculate')"
+    examples: [{ in: "30-Jun", out: 30 }, { in: "06-Jul", out: 6 }]
+
+  now:
+    args: []
+    returns: "current LOCAL datetime truncated to the minute: 'YYYY-MM-DDTHH:mm:00.00'"
+    note: "Observed as local IST wall-clock (NOT UTC) — e.g. '2026-06-28T11:29:00.00'."
+
+  today:
+    args: []
+    returns: "current local date (used as Application Date input to toUtcMidnight)"

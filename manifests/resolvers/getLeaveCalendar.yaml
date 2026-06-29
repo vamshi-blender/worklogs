@@ -1,0 +1,24 @@
+# Layer B resolver — an employee's existing leave/WFH/holiday days (calendar feed)
+# Drives the date-picker colour annotations; also a good standalone lookup.
+resolver: getLeaveCalendar
+description: "List of an employee's existing leave/WFH/optional days with type and colour."
+queryable: true
+cacheable: 300s
+inputs:
+  employeeCode: { type: string }
+via:
+  use: getReferencedDataSourceData      # primitive D
+  with:
+    dataSourceId: "11072022-110212853-41b30def-53c2-4d22-9703-67fefa42cd0f"
+    dataSourceReferenceId: "11072022-111034394-31d0cbbc-afc5-4682-adf6-e968b014a035"
+    outputColumns: "Boolean,Color,Date,Name"
+    conditionLabel: "Employee Code"
+    value: "{{input.employeeCode}}"
+output:
+  list: true
+  display: ["Date", "Name"]             # Name = leave type (PL / Optional Leave / WFH)
+  fields:
+    Date:    "Date"                      # ISO datetime
+    Name:    "Name"
+    Color:   "Color"                     # hex, for UI
+    Boolean: "Boolean"

@@ -1,0 +1,19 @@
+# Layer B resolver — list of Attendance / Comp-off ids (option list)
+# Used for the (optional) Attendance Id linkage on the leave form.
+resolver: getAttendanceIdOptions
+description: "Browsable list of attendance / comp-off ids (e.g. VM/COMP/100)."
+queryable: true
+cacheable: 300s
+inputs:
+  search: { type: string, required: false }
+via:
+  use: getDataTableDataByReference      # primitive A
+  with:
+    dataTableId: "13032020-124823114-a3747833-d5e8-4745-9f8f-d866637f6399"
+    functionId:  "25012022-171704805-ed8759c9-651f-4117-9dee-7ca5d63bf207"
+    referenceName: "Attendance Id"
+    referencedElements: "Attendance Date,Employee Code,Employee Name,REC ID,Attendance Id Grid"
+    value: "{{input.search | default ''}}"
+output:
+  list: true
+  value: "AppData"

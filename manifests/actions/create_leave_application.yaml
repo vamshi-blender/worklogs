@@ -1,0 +1,213 @@
+# =============================================================================
+# ACTION: create_leave_application
+# Source of truth: docs/quixy-leave-form-analysis.md (3 live submissions, 2026-06-28)
+# Server keys are reproduced EXACTLY, including the misspelling "Leave Tyoe".
+# Status: declarative artifact only — not wired to AI/extension.
+# =============================================================================
+action: create_leave_application
+version: 1
+intent_description: "Apply for leave (PL / LOP / Optional) on the Quixy Leave Application app."
+
+app:
+  appId: "05062020-161245045-ec6b6933-5899-4b4f-b51f-d273fe01e07d"
+  appName: "Leave Application"
+  navigation: "Leave Attendance > Requisitions > Leave Application"   # for KB/manuals
+
+# -- logged-in user context (from the auth token; see note on employeeCode) ----
+identity:
+  userId:       "JWT.UserId"
+  username:     "JWT.UserName"
+  fullName:     "JWT.Name"
+  email:        "JWT.EmailId"
+  employeeCode: "<E####>"   # UNVERIFIED source: prefilled on form; likely an email->employee-code
+                            # lookup or profile field. Needed BEFORE the master/balance resolvers.
+
+# -- what a user supplies ------------------------------------------------------
+user_inputs:
+  leaveType:
+    type: enum
+    options: [PL, LOP, "Optional Leave"]      # STATIC enum (baked in definition; no resolver call)
+    required: true
+    payload_key: "Leave Tyoe"
+  halfDay:
+    type: enum
+    options: [Yes, No]
+    required: true
+    payload_key: "Half Day"
+    rules:
+      - when: "leaveType == 'Optional Leave'"   # business rule (observed)
+        set: "No"
+        disabled: true                          # Optional Leave is always full-day
+  halfDayType:
+    type: enum
+    options: ["First Half", "Second Half"]
+    payload_key: "Half Day Type"
+    required_when: "halfDay == 'Yes'"           # conditional-required (rule-driven, not a static validation)
+    visible_when: "halfDay == 'Yes'"
+  leaveDates:
+    type: date_range                            # {from, to}; single/half day = same date twice
+    required: true
+    payload_key: "Leave Dates New ds"
+  reason:
+    type: string
+    maxLen: 2000
+    required: true
+    payload_key: "Reason"
+  contactNumber:
+    type: string
+    required: false
+    payload_key: "Contact Number"
+    default: "{{identity.contactNumber}}"       # UNVERIFIED prefill source
+  fileUpload:
+    type: file[]
+    required: false
+    payload_key: "File Upload if any"
+  acknowledgment:
+    type: boolean
+    required: true                              # must be true to submit
+    payload_key: "Employee Check Box"
+
+# -- prerequisite lookups (hidden execution resolvers) -------------------------
+resolvers:
+  applicationId: { use: getNextApplicationId }
+  employee:      { use: getEmployeeMaster, with: { employeeCode: "{{identity.employeeCode}}" } }
+  balance:       { use: getLeaveBalance,   with: { employeeCode: "{{identity.employeeCode}}" } }
+  # calendar is used by the date picker UI / as a standalone lookup; not required for the write
+  calendar:      { use: getLeaveCalendar,  with: { employeeCode: "{{identity.employeeCode}}" }, optional: true }
+
+# -- option-browsing resolvers (conversational, not part of the write) ---------
+option_sources:
+  attendanceId: { use: getAttendanceIdOptions }   # only if linking a comp-off
+
+# -- fixed values baked into the form definition -------------------------------
+constants:
+  _AppId: "05062020-161245045-ec6b6933-5899-4b4f-b51f-d273fe01e07d"
+  _AppName: "Leave Application"
+  _WorkSpaceId: "13032020-124814289-77ce2fcd-ffe2-444f-ab91-cc4596c5cbbb"
+  _OrganizationId: "29102019-093434548-a4fe41b0-1fd0-489a-ac08-a29b98883143"
+  workflowStepId: "28072020-184101534-d8d6e364-cbbe-4e6d-bcc8-19b98f15fd92"
+  RichTextNote: >
+    <p><span style="color: rgba(255, 0, 0, 1)">For any request the <strong>end date must not go
+    beyond the 25th of the same month</strong> and <strong>cannot extend into the next month</strong>.</span></p>
+    <p>Example: If a request spans 17-May-2025 to 11-Jun-2025, split it as App1 17-25 May, App2 26-31 May,
+    App3 01-11 Jun.</p>
+
+# -- business rules ------------------------------------------------------------
+business_rules:
+  - id: half_day_sets_half
+    when: "halfDay == 'Yes'"
+    effect: "No of Days = 0.5; reveal & require halfDayType"
+  - id: optional_is_full_day
+    when: "leaveType == 'Optional Leave'"
+    effect: "halfDay locked to 'No'; halfDayType/Half Day number stay empty"
+  - id: month_boundary           # SOFT — not blocked by UI; enforce as pre-submit check
+    assert: "month(leaveDates.from) == month(leaveDates.to) AND dayOfMonth(leaveDates.to) <= 25"
+    severity: warning
+    message: "Leave can't cross a month or go past the 25th — split into separate applications."
+  - id: balance_check            # UNVERIFIED — hypothesised from field semantics
+    when: "leaveType == 'PL'"
+    assert: "balance.BalanceLeaves >= noOfDays"
+    note: "When PL > balance, the hidden 'Proceed To Loss Of Pay' field likely appears (untested)."
+
+# -- final SaveAppData body (every key the server expects) ----------------------
+payload_template:
+  # identity / employee (auto-filled)
+  "Application Id": "{{resolver.applicationId}}"
+  "Application Date": "{{derive.toUtcMidnight(derive.today())}}"
+  "Employee Id": "{{identity.employeeCode}}"
+  "Full Name": "{{resolver.employee.FullName}}"
+  "Date of Joining": "{{resolver.employee.DateOfJoining}}"
+  "Employee Name User": null
+  "DOB": "{{resolver.employee.DOB}}"
+  "Employee Code": "{{identity.employeeCode}}"
+  "Designation": "{{resolver.employee.Designation}}"
+  "Attendance Id": null
+  "Attendance Id Grid": []
+  "Rich Text": "{{const.RichTextNote}}"
+  # balances (auto-filled; reflect pending leaves)
+  "Entitled Leaves": "{{resolver.balance.EntitledLeaves}}"
+  "Used Leaves": "{{resolver.balance.UsedLeaves}}"
+  "Balance Leaves": "{{resolver.balance.BalanceLeaves}}"
+  "Optional Balance": "{{resolver.balance.OptionalBalance}}"
+  "Optional Leaves Track": "{{resolver.balance.OptionalLeavesTrack}}"
+  "Used Optional": "{{resolver.balance.UsedOptional}}"
+  "Employee Code Leave Balance": "{{identity.employeeCode}}"
+  # user inputs
+  "Leave Tyoe": "{{input.leaveType}}"
+  "Half Day": "{{input.halfDay}}"
+  "Half Day Type": "{{input.halfDayType | default ''}}"
+  "Reason": "{{input.reason}}"
+  "Contact Number": "{{input.contactNumber}}"
+  "File Upload if any": "{{input.fileUpload | default []}}"
+  "Employee Check Box": "{{input.acknowledgment}}"
+  # computed (derive.*)
+  "Leave Dates New ds": "{{derive.dateRangeTriple(input.leaveDates)}}"
+  "No of Days": "{{derive.noOfDays(input.leaveDates, input.halfDay)}}"
+  "Half Day number": "{{derive.halfDayNumber(input.halfDay)}}"
+  "Number new ds": "{{derive.dayCount(input.leaveDates)}}"
+  "Employee Code new ds": "{{identity.employeeCode}}"
+  "Leave Dates New ds From Date": "{{derive.toUtcMidnight(input.leaveDates.from)}}"
+  "Leave Dates New ds To Date": "{{derive.toUtcMidnight(input.leaveDates.to)}}"
+  "From Date Calculate": "{{derive.month(input.leaveDates.from)}}"
+  "To Date Calculate": "{{derive.month(input.leaveDates.to)}}"
+  "From DateOff Calculate": "{{derive.dayOfMonth(input.leaveDates.from)}}"
+  "To Dateoff Calculate": "{{derive.dayOfMonth(input.leaveDates.to)}}"
+  "Date Time Stamp": "{{derive.now()}}"
+  "Proceed To Loss Of Pay": ""
+  # workflow placeholders filled at later steps (null/empty at submit)
+  "Manager Name": null
+  "Manager Email Id": null
+  "Manager Employee Id": null
+  "Manager Remarks": ""
+  "Manager Checkbox": false
+  "HR Name": null
+  "HR Email Id": null
+  "HR Employee Id": null
+  "HR Date Time Stamp": "{{derive.now()}}"
+  "HR Remarks": ""
+  # control envelope
+  "_AppId": "{{const._AppId}}"
+  "_AppName": "{{const._AppName}}"
+  "_CurrentStepNumber": 1
+  "_WorkSpaceId": "{{const._WorkSpaceId}}"
+  "_OrganizationId": "{{const._OrganizationId}}"
+  "_NextGroupName": "Manager Approval"
+  "_IsCompleted": false
+  "_ExternalApiIds": ""
+  "_InternalApiIds": ""
+  "_DataFunctionIds": ""
+  "_UserFunctionIds": ""
+  "_UserId": "{{identity.userId}}"
+  "_Username": "{{identity.username}}"
+  "_FullName": "{{identity.fullName}}"
+  "_UpdatedUserId": ""
+  "_UpdatedUsername": ""
+  "_UpdatedEmailId": ""
+  "_UserEmailId": "{{identity.email}}"
+  "_CreatedLocation": ""
+  "_NextStepUsers": ""
+  "_UpdatedLocation": ""
+  "_WorkFlowAction": "Start - Submit"
+
+# -- the write -----------------------------------------------------------------
+execute:
+  use: saveAppData                  # primitive G
+  with:
+    appName: "Leave Application"
+  success: { path: "Data", as: recordId }   # also returns full record in AppData
+
+# -- workflow (multi-step; this manifest only performs the first transition) ----
+workflow:
+  this_step: { number: 1, action: "Start - Submit", next: "Manager Approval" }
+  later_steps:                      # NOT yet captured — same record id, different _WorkFlowAction
+    - "Manager Approval"            # Manager Checkbox becomes required here
+    - "HR"
+  status_report: "Leave Attendance > Status of Applications > Leave Applications"
+
+# -- mandatory summary (per analysis §5) ---------------------------------------
+mandatory:
+  static_at_submit: ["Leave Tyoe", "Half Day", "Leave Dates New ds", "Reason", "Employee Check Box", "Employee Id", "Application Id"]
+  conditional: { "Half Day Type": "required when Half Day == 'Yes'" }
+  later_step: { "Manager Checkbox": "required at Manager Approval" }
+  api_plumbing: ["_AppId", "_AppName", "_WorkSpaceId", "_OrganizationId", "_UserId", "_WorkFlowAction", "_CurrentStepNumber", "_NextGroupName", "_IsCompleted"]
+  true_api_minimum: "UNVERIFIED — needs replay testing (strip fields → POST)."
