@@ -97,35 +97,36 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
-  messages.push({ role: "user", content });
-  await saveChatMessages();
-  input.value = "";
+  await sendChatMessage(content);
+});
 
-  renderMessages("Thinking...");
+input.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    form.requestSubmit();
+  }
+});
+
+async function sendChatMessage(content) {
+  const messageContent = String(content || "").trim();
+
+  if (!messageContent || sendButton.disabled) {
+    return;
+  }
+
   setChatBusy(true);
   let assistantMessageIndex = -1;
 
   try {
+    messages.push({ role: "user", content: messageContent });
+    await saveChatMessages();
+    input.value = "";
+
+    renderMessages("Thinking...");
+
     const backendUrl = await getBackendUrl();
     const excelContext = await getSelectedExcelForChat();
     updateExcelAccessGate(excelContext.excelAccess);
-    const response = await fetch(`${backendUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages: getRecentChatMessages(),
-        currentDate: getLocalDate(),
-        timeZone: getLocalTimeZone(),
-        debugTools: debugToolsEnabled,
-        ...(excelContext.excelFile ? { excelFile: excelContext.excelFile } : {}),
-        excelAccess: excelContext.excelAccess,
-      }),
-    });
-
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || "The backend did not return a reply.");
-    }
 
     assistantMessageIndex = messages.push({
       role: "assistant",
@@ -133,44 +134,41 @@ form.addEventListener("submit", async (event) => {
     }) - 1;
     renderMessages();
 
-    const result = await readChatStream(
-      response,
-      (delta) => {
-        messages[assistantMessageIndex].content += delta;
-        renderMessages();
-      },
-      addToolDebugEvent,
-    );
+    let clientToolResults = [];
+    let completed = false;
 
-    if (result.reply && !messages[assistantMessageIndex].content.trim()) {
-      messages[assistantMessageIndex].content = result.reply;
-    }
+    for (let turn = 0; turn < 4; turn += 1) {
+      messages[assistantMessageIndex].content = "";
+      renderMessages(turn === 0 ? "Thinking..." : "Reading tool result...");
 
-    const returnedActions = normalizeWorklogActions(
-      result.worklogActions ||
-        result.worklogAction ||
-        result.worklogDrafts ||
-        result.worklogDraft,
-    );
-    const returnedPmsActions = normalizePmsActions(result.pmsActions || result.pmsAction);
-    const returnedPmsLookups = normalizePmsLookups(
-      result.pmsLookupRequests || result.pmsLookupRequest,
-    );
-
-    if (
-      returnedActions.length > 0 ||
-      returnedPmsActions.length > 0 ||
-      returnedPmsLookups.length > 0
-    ) {
-      await saveChatMessages();
-      await executeAiPmsOperations({
-        worklogActions: returnedActions,
-        pmsActions: returnedPmsActions,
-        pmsLookups: returnedPmsLookups,
+      const result = await runBackendChatTurn({
+        backendUrl,
+        excelContext,
+        clientToolResults,
+        assistantMessageIndex,
       });
-    } else {
-      await saveChatMessages();
+      const clientToolRequests = getClientToolRequests(result);
+
+      if (!hasClientToolRequests(clientToolRequests)) {
+        completed = true;
+        break;
+      }
+
+      messages[assistantMessageIndex].content = "Working in PMS...";
+      renderMessages();
+      clientToolResults = await executeClientToolRequests(clientToolRequests, {
+        onStatus(status) {
+          messages[assistantMessageIndex].content = status;
+          renderMessages();
+        },
+      });
     }
+
+    if (!completed) {
+      throw new Error("The assistant requested too many client-side tool rounds.");
+    }
+
+    await saveChatMessages();
     renderMessages();
   } catch (error) {
     if (
@@ -188,16 +186,10 @@ form.addEventListener("submit", async (event) => {
     renderMessages();
   } finally {
     setChatBusy(false);
+    renderMessages();
     input.focus();
   }
-});
-
-input.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    form.requestSubmit();
-  }
-});
+}
 
 function showScreen(screen) {
   const isChat = screen === "chat";
@@ -281,19 +273,43 @@ async function continueAfterPmsLogin() {
   clearPmsLoginGate();
   renderMessages("Continuing PMS operation...");
   setChatBusy(true);
+  const assistantMessageIndex = messages.push({
+    role: "assistant",
+    content: "Continuing PMS operation...",
+  }) - 1;
 
   try {
-    await runPmsOperations({
+    const backendUrl = await getBackendUrl();
+    const excelContext = await getSelectedExcelForChat();
+    updateExcelAccessGate(excelContext.excelAccess);
+    const clientToolRequests = {
       worklogActions: pendingWorklogActions || [],
       pmsActions: pendingPmsActions || [],
       pmsLookups: pendingPmsLookups || [],
+    };
+    const clientToolResults = await executeClientToolRequests(clientToolRequests, {
+      onStatus(status) {
+        messages[assistantMessageIndex].content = status;
+        renderMessages();
+      },
     });
     pendingWorklogActions = null;
     pendingPmsActions = null;
     pendingPmsLookups = null;
     await savePendingPmsOperations();
+    messages[assistantMessageIndex].content = "";
+    await runBackendChatTurn({
+      backendUrl,
+      excelContext,
+      clientToolResults,
+      assistantMessageIndex,
+    });
+    await saveChatMessages();
     renderMessages();
   } catch {
+    if (messages[assistantMessageIndex]?.content.trim() === "") {
+      messages.splice(assistantMessageIndex, 1);
+    }
     renderMessages();
   } finally {
     setChatBusy(false);
@@ -377,18 +393,71 @@ async function createWorklog(event) {
   }
 }
 
-async function executeAiPmsOperations({ worklogActions = [], pmsActions = [], pmsLookups = [] }) {
+async function runBackendChatTurn({
+  backendUrl,
+  excelContext,
+  clientToolResults,
+  assistantMessageIndex,
+}) {
+  const response = await fetch(`${backendUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: getRecentChatMessages(),
+      ...(clientToolResults.length > 0 ? { clientToolResults } : {}),
+      currentDate: getLocalDate(),
+      timeZone: getLocalTimeZone(),
+      debugTools: debugToolsEnabled,
+      ...(excelContext.excelFile ? { excelFile: excelContext.excelFile } : {}),
+      excelAccess: excelContext.excelAccess,
+    }),
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || "The backend did not return a reply.");
+  }
+
+  const result = await readChatStream(
+    response,
+    (delta) => {
+      messages[assistantMessageIndex].content += delta;
+      renderMessages();
+    },
+    addToolDebugEvent,
+  );
+
+  if (result.reply && !messages[assistantMessageIndex].content.trim()) {
+    messages[assistantMessageIndex].content = result.reply;
+  }
+
+  return result;
+}
+
+function getClientToolRequests(result) {
+  return {
+    worklogActions: normalizeWorklogActions(
+      result.worklogActions ||
+        result.worklogAction ||
+        result.worklogDrafts ||
+        result.worklogDraft,
+    ),
+    pmsActions: normalizePmsActions(result.pmsActions || result.pmsAction),
+    pmsLookups: normalizePmsLookups(result.pmsLookupRequests || result.pmsLookupRequest),
+  };
+}
+
+function hasClientToolRequests({ worklogActions = [], pmsActions = [], pmsLookups = [] }) {
+  return worklogActions.length > 0 || pmsActions.length > 0 || pmsLookups.length > 0;
+}
+
+async function executeClientToolRequests(
+  { worklogActions = [], pmsActions = [], pmsLookups = [] },
+  { onStatus },
+) {
   const normalizedWorklogs = normalizeWorklogActions(worklogActions);
   const normalizedActions = normalizePmsActions(pmsActions);
   const normalizedLookups = normalizePmsLookups(pmsLookups);
-
-  if (
-    normalizedWorklogs.length === 0 &&
-    normalizedActions.length === 0 &&
-    normalizedLookups.length === 0
-  ) {
-    return;
-  }
 
   const hasToken = await detectToken({ quiet: true, openIfMissing: false });
 
@@ -398,157 +467,83 @@ async function executeAiPmsOperations({ worklogActions = [], pmsActions = [], pm
     pendingPmsLookups = normalizedLookups.length ? normalizedLookups : null;
     await savePendingPmsOperations();
     await startPmsLoginGate();
-    return;
+    throw new Error("PMS login is required before I can run the requested client-side tool.");
   }
 
   pendingWorklogActions = null;
   pendingPmsActions = null;
   pendingPmsLookups = null;
   await savePendingPmsOperations();
-  await runPmsOperations({
-    worklogActions: normalizedWorklogs,
-    pmsActions: normalizedActions,
-    pmsLookups: normalizedLookups,
-  });
+
+  const results = [];
+
+  for (let index = 0; index < normalizedWorklogs.length; index += 1) {
+    const draft = normalizedWorklogs[index];
+    results.push(
+      await captureClientToolResult("create_worklog", async () => {
+        onStatus(
+          normalizedWorklogs.length === 1
+            ? `Creating worklog for ${draft.issueId}...`
+            : `Creating worklog ${index + 1}/${normalizedWorklogs.length} for ${draft.issueId}...`,
+        );
+        const saved = await saveWorklog({
+          issueId: draft.issueId,
+          worklogDate: draft.worklogDate,
+          hours: String(draft.hours),
+          category: draft.category,
+          description: draft.description,
+          onStatus,
+        });
+        return { draft, saved };
+      }),
+    );
+  }
+
+  for (let index = 0; index < normalizedActions.length; index += 1) {
+    const action = normalizedActions[index];
+    results.push(
+      await captureClientToolResult("submit_pms_action", async () => {
+        onStatus(
+          normalizedActions.length === 1
+            ? `Executing ${formatPmsActionName(action.actionName)}...`
+            : `Executing PMS action ${index + 1}/${normalizedActions.length}...`,
+        );
+        const saved = await executeManifestAction(action, { onStatus });
+        return { action, saved };
+      }),
+    );
+  }
+
+  for (let index = 0; index < normalizedLookups.length; index += 1) {
+    const lookup = normalizedLookups[index];
+    results.push(
+      await captureClientToolResult("request_pms_lookup", async () => {
+        onStatus(
+          normalizedLookups.length === 1
+            ? `Checking ${formatPmsLookupName(lookup.resolverName)}...`
+            : `Checking PMS lookup ${index + 1}/${normalizedLookups.length}...`,
+        );
+        return executePmsLookup(lookup);
+      }),
+    );
+  }
+
+  return results;
 }
 
-async function runPmsOperations({ worklogActions = [], pmsActions = [], pmsLookups = [] }) {
-  const normalizedWorklogs = normalizeWorklogActions(worklogActions);
-  const normalizedActions = normalizePmsActions(pmsActions);
-  const normalizedLookups = normalizePmsLookups(pmsLookups);
-
-  if (normalizedWorklogs.length > 0) {
-    await createWorklogsFromAiActions(normalizedWorklogs);
-  }
-
-  if (normalizedActions.length > 0) {
-    await executeManifestActions(normalizedActions);
-  }
-
-  if (normalizedLookups.length > 0) {
-    await executePmsLookups(normalizedLookups);
-  }
-}
-
-async function createWorklogsFromAiActions(actionOrActions) {
-  const drafts = normalizeWorklogActions(actionOrActions);
-
-  if (drafts.length === 0) {
-    return;
-  }
-
-  messages.push({
-    role: "assistant",
-    content:
-      drafts.length === 1
-        ? `Creating worklog for ${drafts[0].issueId}...`
-        : `Creating ${drafts.length} worklogs...`,
-  });
-  await saveChatMessages();
-  renderMessages();
-
-  const savedRecords = [];
-
+async function captureClientToolResult(toolName, execute) {
   try {
-    for (let index = 0; index < drafts.length; index += 1) {
-      const draft = drafts[index];
-      const prefix =
-        drafts.length === 1 ? "" : `Worklog ${index + 1}/${drafts.length}: `;
-      const saved = await saveWorklog({
-        issueId: draft.issueId,
-        worklogDate: draft.worklogDate,
-        hours: String(draft.hours),
-        category: draft.category,
-        description: draft.description,
-        onStatus(status) {
-          messages[messages.length - 1] = {
-            role: "assistant",
-            content: `${prefix}${status}`,
-          };
-          renderMessages();
-        },
-      });
-
-      savedRecords.push(saved);
-    }
-
-    messages[messages.length - 1] = {
-      role: "assistant",
-      content: formatCreatedWorklogsMessage(savedRecords),
+    return {
+      toolName,
+      status: "success",
+      output: await execute(),
     };
-    await saveChatMessages();
   } catch (error) {
-    const partialMessage =
-      savedRecords.length > 0
-        ? `\n\nCreated before the failure:\n${savedRecords
-            .map((saved, index) => `${index + 1}. ${saved.issueId} - ${saved.recordId}`)
-            .join("\n")}`
-        : "";
-    messages[messages.length - 1] = {
-      role: "assistant",
-      content:
-        error instanceof Error
-          ? `I could not create all requested worklogs: ${error.message}${partialMessage}`
-          : `I could not create all requested worklogs.${partialMessage}`,
+    return {
+      toolName,
+      status: "error",
+      error: error instanceof Error ? error.message : "Client-side tool failed.",
     };
-    await saveChatMessages();
-    throw error;
-  }
-}
-
-async function executeManifestActions(actions) {
-  const normalizedActions = normalizePmsActions(actions);
-
-  if (normalizedActions.length === 0) {
-    return;
-  }
-
-  const savedRecords = [];
-
-  messages.push({
-    role: "assistant",
-    content:
-      normalizedActions.length === 1
-        ? `Executing ${formatPmsActionName(normalizedActions[0].actionName)}...`
-        : `Executing ${normalizedActions.length} PMS actions...`,
-  });
-  await saveChatMessages();
-  renderMessages();
-
-  try {
-    for (let index = 0; index < normalizedActions.length; index += 1) {
-      const action = normalizedActions[index];
-      const prefix =
-        normalizedActions.length === 1
-          ? ""
-          : `${formatPmsActionName(action.actionName)} ${index + 1}/${normalizedActions.length}: `;
-      const saved = await executeManifestAction(action, {
-        onStatus(status) {
-          messages[messages.length - 1] = {
-            role: "assistant",
-            content: `${prefix}${status}`,
-          };
-          renderMessages();
-        },
-      });
-      savedRecords.push(saved);
-    }
-
-    messages[messages.length - 1] = {
-      role: "assistant",
-      content: formatPmsActionSuccessMessage(savedRecords),
-    };
-    await saveChatMessages();
-  } catch (error) {
-    messages[messages.length - 1] = {
-      role: "assistant",
-      content:
-        error instanceof Error
-          ? `I could not complete the PMS action: ${error.message}`
-          : "I could not complete the PMS action.",
-    };
-    await saveChatMessages();
-    throw error;
   }
 }
 
@@ -561,48 +556,6 @@ async function executeManifestAction(action, { onStatus }) {
   }
 
   throw new Error(`Unsupported PMS action: ${action.actionName}`);
-}
-
-async function executePmsLookups(lookups) {
-  const normalizedLookups = normalizePmsLookups(lookups);
-
-  if (normalizedLookups.length === 0) {
-    return;
-  }
-
-  messages.push({
-    role: "assistant",
-    content:
-      normalizedLookups.length === 1
-        ? `Checking ${formatPmsLookupName(normalizedLookups[0].resolverName)}...`
-        : `Checking ${normalizedLookups.length} PMS lookups...`,
-  });
-  await saveChatMessages();
-  renderMessages();
-
-  try {
-    const results = [];
-
-    for (const lookup of normalizedLookups) {
-      results.push(await executePmsLookup(lookup));
-    }
-
-    messages[messages.length - 1] = {
-      role: "assistant",
-      content: results.map(formatPmsLookupResult).join("\n\n"),
-    };
-    await saveChatMessages();
-  } catch (error) {
-    messages[messages.length - 1] = {
-      role: "assistant",
-      content:
-        error instanceof Error
-          ? `I could not complete the PMS lookup: ${error.message}`
-          : "I could not complete the PMS lookup.",
-    };
-    await saveChatMessages();
-    throw error;
-  }
 }
 
 async function executePmsLookup(lookup) {
@@ -693,19 +646,6 @@ function isWorklogAction(value) {
     typeof value.description === "string" &&
     Number.isFinite(Number(value.hours))
   );
-}
-
-function formatCreatedWorklogsMessage(savedRecords) {
-  if (savedRecords.length === 1) {
-    const [saved] = savedRecords;
-    return `Worklog created for ${saved.issueId}. Record: ${saved.recordId}`;
-  }
-
-  const rows = savedRecords.map(
-    (saved, index) => `${index + 1}. ${saved.issueId} - ${saved.recordId}`,
-  );
-
-  return `Created ${savedRecords.length} worklogs:\n\n${rows.join("\n")}`;
 }
 
 async function readChatStream(response, onDelta, onToolDebug) {
@@ -1475,6 +1415,10 @@ function renderMessages(statusText = "") {
     messagesElement.appendChild(bubble);
   }
 
+  if (shouldShowConfirmationActions()) {
+    messagesElement.appendChild(createConfirmationActionsElement());
+  }
+
   if (excelAccessGate) {
     messagesElement.appendChild(createExcelAccessGateElement());
   }
@@ -1491,6 +1435,59 @@ function renderMessages(statusText = "") {
   }
 
   messagesElement.scrollTop = messagesElement.scrollHeight;
+}
+
+function shouldShowConfirmationActions() {
+  if (sendButton.disabled) {
+    return false;
+  }
+
+  const chatMessages = normalizeChatMessages(messages);
+  const latestMessage = chatMessages[chatMessages.length - 1];
+
+  return latestMessage?.role === "assistant" && isApprovalPrompt(latestMessage.content);
+}
+
+function isApprovalPrompt(content) {
+  const text = String(content || "").toLowerCase();
+
+  if (!text.trim()) {
+    return false;
+  }
+
+  const asksForApproval =
+    /\b(approve|approval|confirm|confirmed|proceed|go ahead)\b/.test(text);
+  const allowsChanges =
+    /\b(change|changes|edit|modify|correct|reject|rejected)\b/.test(text);
+  const looksCompleted =
+    /\b(created|submitted|queued|executed|completed|saved|failed|error)\b/.test(text);
+
+  return asksForApproval && allowsChanges && !looksCompleted;
+}
+
+function createConfirmationActionsElement() {
+  const card = document.createElement("section");
+  card.className = "confirmation-actions";
+  card.setAttribute("aria-label", "Action confirmation");
+
+  const approveButton = document.createElement("button");
+  approveButton.className = "confirmation-button approve";
+  approveButton.type = "button";
+  approveButton.textContent = "Approve";
+  approveButton.addEventListener("click", () => {
+    sendChatMessage("Approved.");
+  });
+
+  const rejectButton = document.createElement("button");
+  rejectButton.className = "confirmation-button reject";
+  rejectButton.type = "button";
+  rejectButton.textContent = "Reject";
+  rejectButton.addEventListener("click", () => {
+    sendChatMessage("Rejected.");
+  });
+
+  card.append(approveButton, rejectButton);
+  return card;
 }
 
 function createPmsLoginGateElement() {
@@ -1934,17 +1931,6 @@ function formatPmsActionName(actionName) {
   return actionName;
 }
 
-function formatPmsActionSuccessMessage(savedRecords) {
-  if (savedRecords.length === 1) {
-    const [saved] = savedRecords;
-    return `Leave application submitted. Application: ${saved.applicationId}. Record: ${saved.recordId}`;
-  }
-
-  return `Completed ${savedRecords.length} PMS actions:\n\n${savedRecords
-    .map((saved, index) => `${index + 1}. ${saved.label || saved.actionName} - ${saved.recordId}`)
-    .join("\n")}`;
-}
-
 function formatPmsLookupName(resolverName) {
   if (resolverName === "getLeaveBalance") {
     return "leave balance";
@@ -1955,48 +1941,6 @@ function formatPmsLookupName(resolverName) {
   }
 
   return resolverName;
-}
-
-function formatPmsLookupResult(result) {
-  if (result.resolverName === "getLeaveBalance") {
-    const balance = result.data;
-    return [
-      `Leave balance for ${result.employeeCode}:`,
-      `- PL balance: ${balance.BalanceLeaves ?? ""}`,
-      `- Entitled leaves: ${balance.EntitledLeaves ?? ""}`,
-      `- Used leaves: ${balance.UsedLeaves ?? ""}`,
-      `- Optional balance: ${balance.OptionalBalance ?? ""}`,
-      `- Used optional: ${balance.UsedOptional ?? ""}`,
-    ].join("\n");
-  }
-
-  if (result.resolverName === "getLeaveCalendar") {
-    const rows = Array.isArray(result.data) ? result.data.slice(0, 20) : [];
-
-    if (rows.length === 0) {
-      return `No leave calendar entries found for ${result.employeeCode}.`;
-    }
-
-    return `Leave calendar for ${result.employeeCode}:\n\n${rows
-      .map((row, index) => `${index + 1}. ${formatCalendarDate(row.Date)} - ${row.Name || ""}`)
-      .join("\n")}`;
-  }
-
-  return JSON.stringify(result.data, null, 2);
-}
-
-function formatCalendarDate(value) {
-  if (!value) {
-    return "";
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-
-  return formatLeaveDateLabel(date);
 }
 
 function setDefaultDate() {

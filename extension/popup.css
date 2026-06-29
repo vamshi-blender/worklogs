@@ -464,6 +464,32 @@ h1 {
   color: var(--muted);
 }
 
+.confirmation-actions {
+  display: flex;
+  align-self: flex-start;
+  gap: 8px;
+}
+
+.confirmation-button {
+  min-width: 88px;
+  border: 1px solid var(--ink);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 9px 12px;
+}
+
+.confirmation-button.approve {
+  background: var(--accent);
+  color: white;
+}
+
+.confirmation-button.reject {
+  background: var(--paper);
+  color: var(--ink);
+}
+
 .composer {
   display: grid;
   grid-template-columns: 1fr auto;

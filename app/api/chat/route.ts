@@ -15,6 +15,18 @@ const messageSchema = z.object({
 
 const requestSchema = z.object({
   messages: z.array(messageSchema).min(1).max(30),
+  clientToolResults: z
+    .array(
+      z.object({
+        toolName: z.string().trim().min(1).max(120),
+        callId: z.string().trim().min(1).max(120).optional(),
+        status: z.enum(["success", "error"]),
+        output: z.unknown().optional(),
+        error: z.string().trim().max(4000).optional(),
+      }),
+    )
+    .max(10)
+    .optional(),
   currentDate: z
     .string()
     .trim()
@@ -270,13 +282,17 @@ const chatAgent = new Agent({
     "Active tools: get_excel_metadata, get_range_as_csv, create_worklog, list_pms_capabilities, submit_pms_action, request_pms_lookup. Do not mention or use disabled tools.",
     "When the user asks for tool names, list only the exact active tool names above. Do not present capability groups like PMS leave, PMS worklogs, or Excel as tool names. You may separately describe those as capabilities.",
     "Distinguish tool names, action names, and resolver names: create_leave_application is a manifest actionName used with submit_pms_action, not a standalone tool; getLeaveBalance and getLeaveCalendar are resolverName values used with request_pms_lookup, not standalone tools.",
+    "For any operation that changes PMS data, approval is a conversational state. Present the exact details for review, ask the user to approve or request changes, and expect the Chrome extension may show Approve and Reject buttons for that prompt.",
+    "If the latest user message rejects the reviewed action, does not approve it, or asks for changes, do not call the mutating tool. Ask what should change, or apply the requested change and present the updated details for review.",
     "Use tools instead of asking avoidable questions. If the user says read from Excel, check Excel, use Excel, from sheet, today's status, what did I do today, or similar, call get_excel_metadata immediately unless the current conversation already has fresh sheet metadata.",
     "PMS manifest capabilities are executed through generic tools, not one tool per PMS action. Use list_pms_capabilities to inspect supported manifest actions and lookups when needed.",
     "For manifest action create_leave_application, collect these user-facing fields only: leaveType (PL, LOP, Optional Leave), halfDay (Yes/No), halfDayType when halfDay is Yes, fromDate, toDate, reason, optional contactNumber, and acknowledgment. Resolve relative dates using Current date and pass dates as YYYY-MM-DD.",
-    "Leave Application rules: Optional Leave must be full-day, so set halfDay to No and halfDayType to null. If halfDay is No, halfDayType must be null. acknowledgment must be true only when the user has agreed to the required employee checkbox/acknowledgment.",
+    "Leave Application rules: Optional Leave must be full-day, so set halfDay to No and halfDayType to null. If halfDay is No, halfDayType must be null. acknowledgment must be true only when the user has agreed to the required employee checkbox/acknowledgment. Leave dates must be within one calendar month and the end date must be on or before the 25th day of that month. If the requested date range violates this, do not ask for approval and do not call submit_pms_action; explain the policy and ask for a corrected date range.",
     "Manifest action review rule: do not call submit_pms_action immediately after first deriving details. First present the exact action details for human review and ask the user to approve or request changes.",
     "Manifest action approval rule: call submit_pms_action only when the latest user message clearly approves the reviewed action details. The tool queues the action for the Chrome extension to execute locally with the user's PMS session; never include bearer tokens, app metadata, workflow fields, or resolver outputs.",
     "Use request_pms_lookup for standalone PMS lookups currently supported by the manifest layer, such as leave balance or leave calendar. The extension will execute the lookup locally with the user's PMS session after this response; do not invent the lookup result.",
+    "When client-side tool results are present in the prompt, treat them as actual tool outputs from the user's extension. Use those structured results to answer the user's request naturally. Do not say the lookup or action is merely queued after the result has been supplied.",
+    "If a client-side tool result is an error, explain the failure and the next needed user action. If the result is successful, summarize and interpret it from the JSON; do not ask the user to read raw JSON.",
     "Excel workflow: 1) call get_excel_metadata, 2) choose the most likely sheet from the user's date or the Current date month, 3) call get_range_as_csv with a precise A1 range from metadata, 4) answer from the CSV only. For a date-specific question, read the relevant month sheet and find the date block in the CSV. If metadata is unavailable, tell the user the Excel access problem from the tool result.",
     "Worklog workflow: collect exactly these values: issue id, worklog date, hours, category, and log description. If the user asks to raise/log a worklog and says to read from Excel, use Excel to infer date, hours, category, and description when possible, then ask only for values still missing, usually issue id.",
     "Preserve the issue id exactly as the user provides it, except for uppercasing letters. Never change or guess the project prefix, for example do not convert QXY to QKA.",
@@ -330,6 +346,7 @@ export async function POST(request: Request) {
   }
 
   const messages = parsed.data.messages;
+  const clientToolResults = parsed.data.clientToolResults || [];
   const excelDigest = await parseExcelDigest(parsed.data.excelFile);
   const excelAccess = parsed.data.excelAccess;
   const debugTools = Boolean(parsed.data.debugTools);
@@ -340,6 +357,7 @@ export async function POST(request: Request) {
     excelName: excelDigest?.name || "",
     excelAccessStatus: excelAccess?.status || "",
     excelAccessMessage: excelAccess?.message || "",
+    clientToolResults,
   });
   const worklogActions: WorklogDraft[] = [];
   const pmsActions: PmsAction[] = [];
@@ -445,6 +463,10 @@ export async function POST(request: Request) {
             ],
             reviewRequired: true,
             localExecution: true,
+            businessRules: [
+              "Leave dates must be within one calendar month.",
+              "The leave end date must be on or before the 25th day of that month.",
+            ],
           },
         ],
         lookups: [
@@ -470,6 +492,18 @@ export async function POST(request: Request) {
     parameters: pmsActionSchema,
     async execute(input) {
       return executeWithToolDebug("submit_pms_action", input, () => {
+        const validationError = validatePmsActionForQueue(input);
+
+        if (validationError) {
+          return {
+            status: "invalid_action",
+            action: input,
+            error: validationError,
+            nextStep:
+              "Do not queue this action for extension execution. Explain the validation problem and ask the user for corrected details.",
+          };
+        }
+
         pmsActions.push(input);
 
         return {
@@ -661,6 +695,13 @@ function formatMessagesForAgent(
     excelName: string;
     excelAccessStatus: string;
     excelAccessMessage: string;
+    clientToolResults: Array<{
+      toolName: string;
+      callId?: string;
+      status: "success" | "error";
+      output?: unknown;
+      error?: string;
+    }>;
   },
 ) {
   const transcript = messages
@@ -686,6 +727,13 @@ function formatMessagesForAgent(
         ]
           .filter(Boolean)
           .join(" "),
+    context.clientToolResults.length > 0
+      ? [
+          "Client-side tool results from the Chrome extension:",
+          "Use these as real tool outputs for the latest user request. The extension already executed these tools locally with the user's PMS session.",
+          JSON.stringify(context.clientToolResults, null, 2),
+        ].join("\n")
+      : "",
     "",
     transcript,
   ].join("\n");
@@ -700,6 +748,45 @@ function getTodayInTimeZone(timeZone: string) {
   }).formatToParts(new Date());
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${values.year}-${values.month}-${values.day}`;
+}
+
+function validatePmsActionForQueue(action: PmsAction) {
+  if (action.actionName !== "create_leave_application") {
+    return null;
+  }
+
+  const { fromDate, toDate } = action.fields;
+
+  if (fromDate > toDate) {
+    return "Leave start date must be on or before the end date.";
+  }
+
+  const from = parseIsoDateParts(fromDate);
+  const to = parseIsoDateParts(toDate);
+
+  if (!from || !to) {
+    return "Leave dates must use YYYY-MM-DD.";
+  }
+
+  if (from.month !== to.month || from.year !== to.year || to.day > 25) {
+    return "Leave cannot cross a month or go past the 25th. Ask for a corrected date range before submitting.";
+  }
+
+  return null;
+}
+
+function parseIsoDateParts(dateValue: string) {
+  const match = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+  };
 }
 
 async function parseExcelDigest(
