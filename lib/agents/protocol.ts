@@ -4,6 +4,7 @@ export type ChatStreamEvent =
   | {
       type: "response.started";
       requestId: string;
+      conversationId: string;
     }
   | {
       type: "response.delta";
@@ -25,7 +26,7 @@ export type ChatStreamEvent =
     }
   | {
       type: "response.completed";
-      previousResponseId: string | null;
+      conversationId: string;
     }
   | {
       type: "response.error";

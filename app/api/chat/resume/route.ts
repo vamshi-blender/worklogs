@@ -108,6 +108,7 @@ export async function POST(request: Request) {
 
   const stream = streamDonnaRun({
     input: state,
+    conversationId: pending.conversationId,
     signal: request.signal,
   });
 

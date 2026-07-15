@@ -7,8 +7,9 @@ Milestone one connects the Donna Chrome extension to a server-side OpenAI Agents
 - One focused Donna agent running only on the server
 - Explicit model selection through `OPENAI_MODEL`
 - Incremental NDJSON response streaming
-- Current-conversation continuity through OpenAI response chaining
-- Chat transcript and response ID persistence in `chrome.storage.local`
+- Current-conversation continuity through the OpenAI Conversations API
+- Multiple local chat records with isolated conversation IDs in `chrome.storage.local`
+- Conversation history switching, rename, pin, and permanent delete
 - Configurable backend URL persisted in `chrome.storage.sync`
 - A server-side `get_server_time` tool
 - A client-side `get_current_page_context` tool
@@ -57,9 +58,23 @@ Multiple extension origins can be supplied as a comma-separated list.
 ```json
 {
   "message": "Summarize the page I am viewing.",
-  "previousResponseId": "resp_optional"
+  "conversationId": "conv_optional"
 }
 ```
+
+Omit `conversationId` on the first turn. The server creates an OpenAI
+conversation and returns its ID in the stream. Reuse that ID for every later
+turn in the same chat. Clicking **New chat** preserves the current chat in local
+history and opens a clean draft. Its first message creates a different OpenAI
+conversation.
+
+Each history entry has a local UUID for sidebar operations and a separate,
+nullable `conversationId` for OpenAI state. Switching entries restores that
+entry's transcript and sends only its own conversation ID on later turns.
+
+Chats saved by the earlier response-chaining implementation start clean after
+this migration because a response ID cannot be converted into a Conversations
+API conversation ID.
 
 ### Resume a browser tool
 
@@ -89,7 +104,23 @@ Both endpoints return newline-delimited JSON events. The extension consumes:
 - `response.completed`
 - `response.error`
 
-The extension never receives serialized Agents SDK run state.
+The extension never receives serialized Agents SDK run state. The
+`response.started` and `response.completed` events include the active
+`conversationId` so it can be persisted even when a run pauses for a browser
+tool.
+
+### Delete a conversation
+
+`DELETE /api/conversations`
+
+```json
+{
+  "conversationId": "conv_to_delete"
+}
+```
+
+The extension calls this endpoint before removing a chat from local history,
+so **Delete** removes both the visible transcript and its OpenAI conversation.
 
 ## Security boundaries
 
@@ -111,3 +142,4 @@ The extension never receives serialized Agents SDK run state.
 - Production authentication and rate limiting
 - Durable storage for interrupted agent runs
 - Cross-device conversation synchronization
+- Conversation search and archive

@@ -18,7 +18,7 @@ const CLIENT_TOOL_NAMES = new Set<ClientToolName>([
 
 interface StreamDonnaRunOptions {
   input: string | RunState<DonnaRunContext, typeof donnaAgent>;
-  previousResponseId?: string;
+  conversationId: string;
   signal: AbortSignal;
 }
 
@@ -73,7 +73,7 @@ function publicError(error: unknown): ChatStreamEvent {
 
 export function streamDonnaRun({
   input,
-  previousResponseId,
+  conversationId,
   signal,
 }: StreamDonnaRunOptions): ReadableStream<Uint8Array> {
   const abortController = new AbortController();
@@ -83,7 +83,11 @@ export function streamDonnaRun({
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (event: ChatStreamEvent) => controller.enqueue(encodeEvent(event));
-      send({ type: "response.started", requestId: crypto.randomUUID() });
+      send({
+        type: "response.started",
+        requestId: crypto.randomUUID(),
+        conversationId,
+      });
 
       try {
         const isResumedRun = input instanceof RunState;
@@ -95,7 +99,7 @@ export function streamDonnaRun({
             ? {}
             : {
                 context: { clientToolResults: {} },
-                previousResponseId,
+                conversationId,
               }),
         });
 
@@ -117,6 +121,7 @@ export function streamDonnaRun({
         if (interruption?.clientTool) {
           const runId = savePendingRun({
             serializedState: result.state.toString(),
+            conversationId,
             toolCallId: interruption.clientTool.toolCallId,
             toolName: interruption.clientTool.name,
           });
@@ -138,7 +143,7 @@ export function streamDonnaRun({
 
         send({
           type: "response.completed",
-          previousResponseId: result.lastResponseId ?? null,
+          conversationId,
         });
       } catch (error) {
         if (!abortController.signal.aborted) {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import OpenAI from "openai";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
 import { streamDonnaRun } from "@/lib/agents/stream-run";
 
@@ -8,7 +9,7 @@ export const dynamic = "force-dynamic";
 const chatRequestSchema = z
   .object({
     message: z.string().trim().min(1).max(20_000),
-    previousResponseId: z.string().min(1).max(200).optional(),
+    conversationId: z.string().min(1).max(200).optional(),
   })
   .strict();
 
@@ -61,9 +62,27 @@ export async function POST(request: Request) {
     );
   }
 
+  let conversationId = parsed.data.conversationId;
+  if (!conversationId) {
+    try {
+      const openai = new OpenAI();
+      const conversation = await openai.conversations.create(
+        {},
+        { signal: request.signal },
+      );
+      conversationId = conversation.id;
+    } catch (error) {
+      console.error("Failed to create an OpenAI conversation", error);
+      return Response.json(
+        { error: "Donna could not start a conversation. Please try again." },
+        { status: 502, headers: corsHeaders(origin) },
+      );
+    }
+  }
+
   const stream = streamDonnaRun({
     input: parsed.data.message,
-    previousResponseId: parsed.data.previousResponseId,
+    conversationId,
     signal: request.signal,
   });
 

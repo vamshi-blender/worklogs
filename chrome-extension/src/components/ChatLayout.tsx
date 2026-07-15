@@ -3,22 +3,31 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { MenuTwoLineIcon } from "@hugeicons/core-free-icons";
 import type { DisplayMode } from "../mode";
 import ModeSwitcher from "./ModeSwitcher";
-import Sidebar from "./Sidebar";
+import Sidebar, { type SidebarChat } from "./Sidebar";
 import Composer from "./Composer";
 import Greeting from "./Greeting";
 import MessageList, { type ChatMessage } from "./MessageList";
-import { resumeChat, streamChat } from "../api/chat";
+import {
+  deleteConversation,
+  generateConversationTitle,
+  resumeChat,
+  streamChat,
+} from "../api/chat";
 import { executeClientTool } from "../api/clientTools";
 import type { ChatStreamEvent } from "../api/protocol";
 import {
-  clearCurrentChat,
-  loadCurrentChat,
-  saveCurrentChat,
+  createChatTitle,
+  EMPTY_CHAT_STORE,
+  loadChatStore,
+  saveChatStore,
+  type StoredChat,
+  type StoredChatStore,
 } from "../api/chatStorage";
 import "./ChatLayout.css";
 
 // Placeholder until real user identity is wired up.
 const CURRENT_USER_NAME = "Vamshi";
+const EMPTY_MESSAGES: ChatMessage[] = [];
 
 interface ChatLayoutProps {
   ctx: DisplayMode;
@@ -27,8 +36,7 @@ interface ChatLayoutProps {
 export default function ChatLayout({ ctx }: ChatLayoutProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [previousResponseId, setPreviousResponseId] = useState<string | null>(null);
+  const [chatStore, setChatStore] = useState<StoredChatStore>(EMPTY_CHAT_STORE);
   const [busy, setBusy] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
@@ -38,15 +46,27 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   const busyRef = useRef(false);
   const settingsAnchorRef = useRef<HTMLDivElement>(null);
 
+  const activeChat =
+    chatStore.chats.find((chat) => chat.id === chatStore.activeChatId) ?? null;
+  const messages = activeChat?.messages ?? EMPTY_MESSAGES;
+  const conversationId = activeChat?.conversationId ?? null;
   const hasMessages = messages.length > 0;
   const hasPendingApproval = messages.some((message) => message.status === "approval");
+  const sidebarChats: SidebarChat[] = [...chatStore.chats]
+    .sort((left, right) => {
+      if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+      return right.updatedAt - left.updatedAt;
+    })
+    .map(({ id, title, titleStatus, pinned }) => ({
+      id,
+      title,
+      titlePending: titleStatus === "pending",
+      pinned,
+    }));
 
   useEffect(() => {
-    loadCurrentChat()
-      .then((chat) => {
-        setMessages(chat.messages);
-        setPreviousResponseId(chat.previousResponseId);
-      })
+    loadChatStore()
+      .then(setChatStore)
       .finally(() => setHydrated(true));
 
     return () => activeRequestRef.current?.abort();
@@ -55,10 +75,25 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   useEffect(() => {
     if (!hydrated) return;
     const timeout = setTimeout(() => {
-      void saveCurrentChat({ messages, previousResponseId });
+      void saveChatStore(chatStore);
     }, 150);
     return () => clearTimeout(timeout);
-  }, [hydrated, messages, previousResponseId]);
+  }, [chatStore, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+
+    for (const chat of chatStore.chats) {
+      if (chat.titleStatus !== "pending") continue;
+      const firstUserMessage = chat.messages.find(
+        (message) => message.role === "user",
+      );
+      if (!firstUserMessage) continue;
+      void generateTitle(chat.id, firstUserMessage.content);
+    }
+    // Pending titles are retried once when persisted chats are restored.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated]);
 
   useEffect(() => {
     if (!scrollRef.current) return;
@@ -73,13 +108,17 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
     // messages can match it exactly — otherwise a growing composer (e.g. a
     // long, multi-line message) covers message content instead of the
     // content scrolling clear of it.
+    let lastHeight = dock.getBoundingClientRect().height;
     const observer = new ResizeObserver(([entry]) => {
-      setComposerHeight(entry.contentRect.height);
-      // Stay pinned to bottom while the composer grows, matching how
-      // chatgpt.com keeps the latest message in view as the input expands.
-      if (scrollRef.current) {
+      const height = entry.contentRect.height;
+      setComposerHeight(height);
+      // Stay pinned to bottom only when the dock's height changes (e.g. the
+      // composer growing with a longer message) — a width-only change (e.g.
+      // resizing the panel) should never force a scroll.
+      if (height !== lastHeight && scrollRef.current) {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }
+      lastHeight = height;
     });
     observer.observe(dock);
     return () => observer.disconnect();
@@ -103,35 +142,83 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
     setBusy(next);
   }
 
-  function updateAssistant(messageId: string, update: (message: ChatMessage) => ChatMessage) {
-    setMessages((current) =>
-      current.map((message) => (message.id === messageId ? update(message) : message)),
-    );
+  function updateChat(chatId: string, update: (chat: StoredChat) => StoredChat) {
+    setChatStore((current) => ({
+      ...current,
+      chats: current.chats.map((chat) => (chat.id === chatId ? update(chat) : chat)),
+    }));
   }
 
-  function handleStreamEvent(messageId: string, event: ChatStreamEvent) {
-    if (event.type === "response.delta") {
-      updateAssistant(messageId, (message) => ({
+  function updateAssistant(
+    chatId: string,
+    messageId: string,
+    update: (message: ChatMessage) => ChatMessage,
+  ) {
+    updateChat(chatId, (chat) => ({
+      ...chat,
+      messages: chat.messages.map((message) =>
+        message.id === messageId ? update(message) : message,
+      ),
+    }));
+  }
+
+  async function generateTitle(chatId: string, firstUserMessage: string) {
+    try {
+      const title = await generateConversationTitle(firstUserMessage);
+      updateChat(chatId, (chat) =>
+        chat.titleStatus === "pending"
+          ? { ...chat, title, titleStatus: "generated" }
+          : chat,
+      );
+    } catch (error) {
+      console.error("Could not generate a conversation title", error);
+      updateChat(chatId, (chat) =>
+        chat.titleStatus === "pending"
+          ? {
+              ...chat,
+              title: createChatTitle(firstUserMessage),
+              titleStatus: "fallback",
+            }
+          : chat,
+      );
+    }
+  }
+
+  function handleStreamEvent(
+    chatId: string,
+    messageId: string,
+    event: ChatStreamEvent,
+  ) {
+    if (event.type === "response.started") {
+      updateChat(chatId, (chat) => ({
+        ...chat,
+        conversationId: event.conversationId,
+      }));
+    } else if (event.type === "response.delta") {
+      updateAssistant(chatId, messageId, (message) => ({
         ...message,
         content: message.content + event.delta,
         status: "streaming",
         error: undefined,
       }));
     } else if (event.type === "client_tool.request") {
-      updateAssistant(messageId, (message) => ({
+      updateAssistant(chatId, messageId, (message) => ({
         ...message,
         status: "approval",
         toolRequest: event,
       }));
     } else if (event.type === "response.completed") {
-      updateAssistant(messageId, (message) => ({
+      updateAssistant(chatId, messageId, (message) => ({
         ...message,
         status: "done",
         toolRequest: undefined,
       }));
-      setPreviousResponseId(event.previousResponseId);
+      updateChat(chatId, (chat) => ({
+        ...chat,
+        conversationId: event.conversationId,
+      }));
     } else if (event.type === "response.error") {
-      updateAssistant(messageId, (message) => ({
+      updateAssistant(chatId, messageId, (message) => ({
         ...message,
         status: "error",
         error: event.message,
@@ -141,6 +228,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   }
 
   async function executeRequest(
+    chatId: string,
     messageId: string,
     request: (signal: AbortSignal, onEvent: (event: ChatStreamEvent) => void) => Promise<void>,
   ) {
@@ -149,10 +237,12 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
     setBusyState(true);
 
     try {
-      await request(controller.signal, (event) => handleStreamEvent(messageId, event));
+      await request(controller.signal, (event) =>
+        handleStreamEvent(chatId, messageId, event),
+      );
     } catch (error) {
       const cancelled = error instanceof DOMException && error.name === "AbortError";
-      updateAssistant(messageId, (message) => ({
+      updateAssistant(chatId, messageId, (message) => ({
         ...message,
         status: cancelled && message.content ? "done" : "error",
         error: cancelled && !message.content ? "Response stopped." : cancelled ? undefined : error instanceof Error ? error.message : "Donna could not respond.",
@@ -165,18 +255,63 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   }
 
   function handleSend(content: string) {
-    if (busyRef.current || hasPendingApproval) return;
+    if (!hydrated || busyRef.current || hasPendingApproval) return;
+    const chatId = activeChat?.id ?? crypto.randomUUID();
+    const requestConversationId = activeChat?.conversationId ?? undefined;
+    const now = Date.now();
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+    };
     const replyId = crypto.randomUUID();
-    setMessages((current) => [
-      ...current,
-      { id: crypto.randomUUID(), role: "user", content },
-      { id: replyId, role: "assistant", content: "", status: "pending" },
-    ]);
+    const assistantMessage: ChatMessage = {
+      id: replyId,
+      role: "assistant",
+      content: "",
+      status: "pending",
+    };
 
-    void executeRequest(replyId, (signal, onEvent) =>
+    setChatStore((current) => {
+      const existing = current.chats.find((chat) => chat.id === chatId);
+      if (existing) {
+        return {
+          ...current,
+          activeChatId: chatId,
+          chats: current.chats.map((chat) =>
+            chat.id === chatId
+              ? {
+                  ...chat,
+                  messages: [...chat.messages, userMessage, assistantMessage],
+                  updatedAt: now,
+                }
+              : chat,
+          ),
+        };
+      }
+
+      const chat: StoredChat = {
+        id: chatId,
+        title: "",
+        titleStatus: "pending",
+        messages: [userMessage, assistantMessage],
+        conversationId: null,
+        pinned: false,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return {
+        activeChatId: chatId,
+        chats: [chat, ...current.chats],
+      };
+    });
+
+    if (!activeChat) void generateTitle(chatId, content);
+
+    void executeRequest(chatId, replyId, (signal, onEvent) =>
       streamChat({
         message: content,
-        previousResponseId: previousResponseId ?? undefined,
+        conversationId: requestConversationId,
         signal,
         onEvent,
       }),
@@ -189,20 +324,66 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
 
   function handleNewChat() {
     handleCancel();
-    setMessages([]);
-    setPreviousResponseId(null);
-    void clearCurrentChat();
+    setChatStore((current) => ({ ...current, activeChatId: null }));
+  }
+
+  function handleSelectChat(chatId: string) {
+    if (chatId === chatStore.activeChatId) return;
+    handleCancel();
+    setChatStore((current) =>
+      current.chats.some((chat) => chat.id === chatId)
+        ? { ...current, activeChatId: chatId }
+        : current,
+    );
+  }
+
+  function handleRenameChat(chatId: string, title: string) {
+    const normalized = title.replace(/\s+/g, " ").trim().slice(0, 56);
+    if (!normalized) return;
+    updateChat(chatId, (chat) => ({
+      ...chat,
+      title: normalized,
+      titleStatus: "manual",
+    }));
+  }
+
+  function handleTogglePinChat(chatId: string) {
+    updateChat(chatId, (chat) => ({ ...chat, pinned: !chat.pinned }));
+  }
+
+  async function handleDeleteChat(chatId: string): Promise<boolean> {
+    const chat = chatStore.chats.find((candidate) => candidate.id === chatId);
+    if (!chat) return true;
+
+    try {
+      if (chat.conversationId) {
+        await deleteConversation(chat.conversationId);
+      }
+    } catch (error) {
+      console.error("Could not delete Donna conversation", error);
+      return false;
+    }
+
+    if (chatId === chatStore.activeChatId) handleCancel();
+    setChatStore((current) => ({
+      activeChatId:
+        current.activeChatId === chatId ? null : current.activeChatId,
+      chats: current.chats.filter((candidate) => candidate.id !== chatId),
+    }));
+    return true;
   }
 
   async function handleToolDecision(messageId: string, approved: boolean) {
     if (busyRef.current) return;
+    const chatId = activeChat?.id;
+    if (!chatId) return;
     const message = messages.find((candidate) => candidate.id === messageId);
     const toolRequest = message?.toolRequest;
     if (!toolRequest) return;
 
     setBusyState(true);
 
-    updateAssistant(messageId, (current) => ({
+    updateAssistant(chatId, messageId, (current) => ({
       ...current,
       status: "pending",
       toolRequest: undefined,
@@ -221,7 +402,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       error = "The user declined page access.";
     }
 
-    void executeRequest(messageId, (signal, onEvent) =>
+    void executeRequest(chatId, messageId, (signal, onEvent) =>
       resumeChat({
         runId: toolRequest.runId,
         toolCallId: toolRequest.toolCallId,
@@ -236,6 +417,8 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
 
   function handleRetry(messageId: string) {
     if (busyRef.current || hasPendingApproval) return;
+    const chatId = activeChat?.id;
+    if (!chatId) return;
     const failedIndex = messages.findIndex((message) => message.id === messageId);
     if (failedIndex < 1) return;
     const previousUser = [...messages.slice(0, failedIndex)]
@@ -243,16 +426,16 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       .find((message) => message.role === "user");
     if (!previousUser) return;
 
-    updateAssistant(messageId, (message) => ({
+    updateAssistant(chatId, messageId, (message) => ({
       ...message,
       content: "",
       status: "pending",
       error: undefined,
     }));
-    void executeRequest(messageId, (signal, onEvent) =>
+    void executeRequest(chatId, messageId, (signal, onEvent) =>
       streamChat({
         message: previousUser.content,
-        previousResponseId: previousResponseId ?? undefined,
+        conversationId: conversationId ?? undefined,
         signal,
         onEvent,
       }),
@@ -315,7 +498,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
               <Composer
                 onSend={handleSend}
                 busy={busy}
-                disabled={hasPendingApproval}
+                disabled={!hydrated || hasPendingApproval}
                 onCancel={handleCancel}
               />
             </div>
@@ -328,14 +511,25 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
             <Composer
               onSend={handleSend}
               busy={busy}
-              disabled={hasPendingApproval}
+              disabled={!hydrated || hasPendingApproval}
               onCancel={handleCancel}
             />
           </div>
         </main>
       )}
 
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar
+        open={sidebarOpen}
+        chats={sidebarChats}
+        activeChatId={chatStore.activeChatId}
+        busy={busy}
+        onClose={() => setSidebarOpen(false)}
+        onNewChat={handleNewChat}
+        onSelectChat={handleSelectChat}
+        onRenameChat={handleRenameChat}
+        onTogglePinChat={handleTogglePinChat}
+        onDeleteChat={handleDeleteChat}
+      />
     </div>
   );
 }

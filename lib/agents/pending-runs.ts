@@ -2,6 +2,7 @@ const PENDING_RUN_TTL_MS = 10 * 60 * 1000;
 
 export interface PendingRun {
   serializedState: string;
+  conversationId: string;
   toolCallId: string;
   toolName: string;
   createdAt: number;

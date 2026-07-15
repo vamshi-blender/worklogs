@@ -69,7 +69,7 @@ async function streamRequest({
 
 export function streamChat(options: {
   message: string;
-  previousResponseId?: string;
+  conversationId?: string;
   signal: AbortSignal;
   onEvent: (event: ChatStreamEvent) => void;
 }) {
@@ -77,8 +77,8 @@ export function streamChat(options: {
     path: "/api/chat",
     body: {
       message: options.message,
-      ...(options.previousResponseId
-        ? { previousResponseId: options.previousResponseId }
+      ...(options.conversationId
+        ? { conversationId: options.conversationId }
         : {}),
     },
     signal: options.signal,
@@ -107,4 +107,39 @@ export function resumeChat(options: {
     signal: options.signal,
     onEvent: options.onEvent,
   });
+}
+
+export async function generateConversationTitle(message: string): Promise<string> {
+  const backendUrl = await getBackendUrl();
+  const response = await fetch(`${backendUrl}/api/conversations/title`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+
+  if (!response.ok) throw new Error(await readError(response));
+
+  const body: unknown = await response.json();
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !("title" in body) ||
+    typeof body.title !== "string" ||
+    !body.title.trim()
+  ) {
+    throw new Error("The backend returned an invalid conversation title.");
+  }
+
+  return body.title.trim().slice(0, 56);
+}
+
+export async function deleteConversation(conversationId: string): Promise<void> {
+  const backendUrl = await getBackendUrl();
+  const response = await fetch(`${backendUrl}/api/conversations`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conversationId }),
+  });
+
+  if (!response.ok) throw new Error(await readError(response));
 }

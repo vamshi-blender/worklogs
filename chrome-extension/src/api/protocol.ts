@@ -11,13 +11,13 @@ export interface ClientToolRequest {
 }
 
 export type ChatStreamEvent =
-  | { type: "response.started"; requestId: string }
+  | { type: "response.started"; requestId: string; conversationId: string }
   | { type: "response.delta"; delta: string }
   | ({ type: "client_tool.request" } & ClientToolRequest)
   | { type: "response.paused"; runId: string }
   | {
       type: "response.completed";
-      previousResponseId: string | null;
+      conversationId: string;
     }
   | {
       type: "response.error";
