@@ -111,3 +111,78 @@
   background: var(--surface-hover);
   color: var(--text-primary);
 }
+
+.tool-approval,
+.message-error {
+  width: min(100%, 430px);
+  box-sizing: border-box;
+  border: 1px solid var(--border-divider);
+  border-radius: var(--radius-card);
+  background: var(--surface-raised);
+  padding: var(--space-3);
+  color: var(--text-primary);
+}
+
+.tool-approval-eyebrow {
+  margin-bottom: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--text-xs-size);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.tool-approval strong {
+  display: block;
+  font-size: var(--text-sm-size);
+}
+
+.tool-approval p {
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-xs-size);
+  line-height: 1.5;
+}
+
+.tool-approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.tool-approval-actions button,
+.message-error button {
+  min-height: 30px;
+  border: 1px solid var(--border-divider);
+  border-radius: var(--radius-full);
+  background: var(--surface-secondary-button);
+  color: var(--text-primary);
+  padding: 0 var(--space-3);
+  font: inherit;
+  font-size: var(--text-xs-size);
+  cursor: pointer;
+}
+
+.tool-approval-actions button:hover,
+.message-error button:hover {
+  background: var(--surface-secondary-button-hover);
+}
+
+.tool-approval-actions .tool-approval-allow {
+  border-color: transparent;
+  background: var(--accent-fill);
+  color: var(--text-on-accent);
+}
+
+.tool-approval-actions .tool-approval-allow:hover {
+  background: var(--accent-fill-hover);
+}
+
+.message-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-xs-size);
+}

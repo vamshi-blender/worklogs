@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { applyMode, getSavedMode, type DisplayMode } from "../mode";
+import {
+  applyMode,
+  getSavedMode,
+  saveMode,
+  type DisplayMode,
+} from "../mode";
 import { applyTheme, getSavedTheme, type Theme } from "../theme";
+import {
+  getBackendUrl,
+  getExtensionOrigin,
+  saveBackendUrl,
+} from "../api/backend";
 import "./ModeSwitcher.css";
 
 const CTX_LABELS: Record<DisplayMode, string> = {
@@ -17,12 +27,31 @@ export default function ModeSwitcher({ ctx }: ModeSwitcherProps) {
   const [mode, setMode] = useState<DisplayMode | null>(null);
   const [theme, setTheme] = useState<Theme | null>(null);
   const [hint, setHint] = useState("");
+  const [backendUrl, setBackendUrl] = useState("");
+  const [backendDraft, setBackendDraft] = useState("");
+  const [backendHint, setBackendHint] = useState("");
   const switching = useRef(false);
 
   useEffect(() => {
     getSavedMode().then(setMode);
     getSavedTheme().then(setTheme);
+    getBackendUrl().then((url) => {
+      setBackendUrl(url);
+      setBackendDraft(url);
+    });
   }, []);
+
+  async function onSaveBackend() {
+    setBackendHint("");
+    try {
+      const saved = await saveBackendUrl(backendDraft);
+      setBackendUrl(saved);
+      setBackendDraft(saved);
+      setBackendHint("Backend saved.");
+    } catch (error) {
+      setBackendHint(error instanceof Error ? error.message : "Could not save backend.");
+    }
+  }
 
   async function onToggleTheme() {
     const next: Theme = theme === "light" ? "dark" : "light";
@@ -44,7 +73,7 @@ export default function ModeSwitcher({ ctx }: ModeSwitcherProps) {
       // background worker being awake — and wait for it to finish before
       // trying to open anything.
       await applyMode(next);
-      await chrome.storage.sync.set({ mode: next });
+      await saveMode(next);
 
       if (next === "popout") {
         // Background owns the pop-out (single instance). sendMessage queues
@@ -136,6 +165,34 @@ export default function ModeSwitcher({ ctx }: ModeSwitcherProps) {
           />
           Pop-out window (floating, stays open)
         </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Donna backend</legend>
+        <label className="backend-url-label" htmlFor="backend-url">
+          Server URL
+        </label>
+        <div className="backend-url-row">
+          <input
+            id="backend-url"
+            type="url"
+            value={backendDraft}
+            onChange={(event) => setBackendDraft(event.target.value)}
+            placeholder="http://localhost:3000"
+            spellCheck={false}
+          />
+          <button
+            type="button"
+            onClick={onSaveBackend}
+            disabled={!backendDraft.trim() || backendDraft === backendUrl}
+          >
+            Save
+          </button>
+        </div>
+        <p className="backend-origin-hint">
+          Extension origin for the server allowlist: <code>{getExtensionOrigin()}</code>
+        </p>
+        {backendHint && <p className="hint">{backendHint}</p>}
       </fieldset>
 
       {hint && <p className="hint">{hint}</p>}

@@ -1,24 +1,35 @@
 import { useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Copy01Icon, Tick01Icon, Upload01Icon } from "@hugeicons/core-free-icons";
+import type { ClientToolRequest } from "../api/protocol";
 import "./MessageList.css";
 
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  status?: "pending" | "streaming" | "done";
+  status?: "pending" | "streaming" | "approval" | "done" | "error";
+  error?: string;
+  toolRequest?: ClientToolRequest;
 }
 
 interface MessageListProps {
   messages: ChatMessage[];
+  onApproveTool?: (messageId: string) => void;
+  onRejectTool?: (messageId: string) => void;
+  onRetry?: (messageId: string) => void;
 }
 
 const COPIED_RESET_MS = 2000;
 
-export default function MessageList({ messages }: MessageListProps) {
+export default function MessageList({
+  messages,
+  onApproveTool,
+  onRejectTool,
+  onRetry,
+}: MessageListProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const resetTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const resetTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   async function handleCopy(message: ChatMessage) {
     await navigator.clipboard.writeText(message.content);
@@ -33,14 +44,45 @@ export default function MessageList({ messages }: MessageListProps) {
         <div key={message.id} className={`message-row message-row--${message.role}`}>
           {message.role === "user" ? (
             <div className="message-bubble message-bubble--user">{message.content}</div>
-          ) : message.status === "pending" ? (
+          ) : message.status === "pending" && !message.content ? (
             <span className="message-pending-dot" aria-label="Waiting for response" />
           ) : (
             <div className="message-column">
-              <div className="message-bubble message-bubble--assistant">
-                {message.content}
-                {message.status === "streaming" && <span className="message-cursor" />}
-              </div>
+              {message.content && (
+                <div className="message-bubble message-bubble--assistant">
+                  {message.content}
+                  {(message.status === "streaming" || message.status === "pending") && (
+                    <span className="message-cursor" />
+                  )}
+                </div>
+              )}
+              {message.status === "approval" && message.toolRequest && (
+                <div className="tool-approval" role="group" aria-label={message.toolRequest.title}>
+                  <div className="tool-approval-eyebrow">Page access</div>
+                  <strong>{message.toolRequest.title}</strong>
+                  <p>{message.toolRequest.description}</p>
+                  <div className="tool-approval-actions">
+                    <button type="button" onClick={() => onRejectTool?.(message.id)}>
+                      Not now
+                    </button>
+                    <button
+                      type="button"
+                      className="tool-approval-allow"
+                      onClick={() => onApproveTool?.(message.id)}
+                    >
+                      Allow once
+                    </button>
+                  </div>
+                </div>
+              )}
+              {message.status === "error" && (
+                <div className="message-error" role="alert">
+                  <span>{message.error ?? "Something went wrong."}</span>
+                  <button type="button" onClick={() => onRetry?.(message.id)}>
+                    Try again
+                  </button>
+                </div>
+              )}
               {message.status === "done" && (
                 <div className="message-actions">
                   <button

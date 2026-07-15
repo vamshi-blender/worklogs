@@ -1,5 +1,8 @@
 export type DisplayMode = "popup" | "sidepanel" | "popout";
 
+const DEFAULT_DISPLAY_MODE: DisplayMode = "popout";
+const DISPLAY_MODE_DEFAULT_VERSION = 1;
+
 // Dynamic setPopup()/getURL() strings are not rewritten by the build, so these
 // must match where the built HTML ends up in dist/ (CRXJS keeps source paths).
 const POPUP_PATH = "src/popup.html";
@@ -22,7 +25,35 @@ export async function applyMode(mode: DisplayMode): Promise<void> {
   }
 }
 
+export async function saveMode(mode: DisplayMode): Promise<void> {
+  await chrome.storage.sync.set({
+    mode,
+    displayModeDefaultVersion: DISPLAY_MODE_DEFAULT_VERSION,
+  });
+}
+
 export async function getSavedMode(): Promise<DisplayMode> {
-  const { mode = "popup" } = await chrome.storage.sync.get("mode");
-  return mode as DisplayMode;
+  const { mode, displayModeDefaultVersion } = await chrome.storage.sync.get([
+    "mode",
+    "displayModeDefaultVersion",
+  ]);
+
+  // Before pop-out became the product default, installations either had no
+  // saved mode or inherited "popup". Migrate that legacy state once so an
+  // extension update changes the toolbar behavior immediately. Any choice the
+  // user makes after this migration remains persistent.
+  if (displayModeDefaultVersion !== DISPLAY_MODE_DEFAULT_VERSION) {
+    const migratedMode =
+      mode === "sidepanel" || mode === "popout"
+        ? mode
+        : DEFAULT_DISPLAY_MODE;
+    await saveMode(migratedMode);
+    return migratedMode;
+  }
+
+  if (mode === "popup" || mode === "sidepanel" || mode === "popout") {
+    return mode;
+  }
+
+  return DEFAULT_DISPLAY_MODE;
 }

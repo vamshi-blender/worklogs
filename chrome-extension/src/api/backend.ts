@@ -1,0 +1,55 @@
+const BACKEND_URL_KEY = "donnaBackendUrl";
+export const DEFAULT_BACKEND_URL = "http://localhost:3000";
+
+export function normalizeBackendUrl(value: string): string {
+  const url = new URL(value.trim());
+  const isLocalHttp =
+    url.protocol === "http:" &&
+    (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+
+  if (url.protocol !== "https:" && !isLocalHttp) {
+    throw new Error("Use HTTPS, or HTTP only for localhost.");
+  }
+
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("Enter only the backend origin, without credentials or query parameters.");
+  }
+
+  return url.origin;
+}
+
+export async function getBackendUrl(): Promise<string> {
+  const stored = await chrome.storage.sync.get(BACKEND_URL_KEY);
+  const candidate = stored[BACKEND_URL_KEY];
+  if (typeof candidate !== "string") return DEFAULT_BACKEND_URL;
+
+  try {
+    return normalizeBackendUrl(candidate);
+  } catch {
+    return DEFAULT_BACKEND_URL;
+  }
+}
+
+export async function saveBackendUrl(value: string): Promise<string> {
+  const backendUrl = normalizeBackendUrl(value);
+  const originPattern = `${backendUrl}/*`;
+  const alreadyAllowed = await chrome.permissions.contains({
+    origins: [originPattern],
+  });
+
+  if (!alreadyAllowed) {
+    const granted = await chrome.permissions.request({
+      origins: [originPattern],
+    });
+    if (!granted) {
+      throw new Error("Chrome permission for this backend was not granted.");
+    }
+  }
+
+  await chrome.storage.sync.set({ [BACKEND_URL_KEY]: backendUrl });
+  return backendUrl;
+}
+
+export function getExtensionOrigin(): string {
+  return new URL(chrome.runtime.getURL("/")).origin;
+}

@@ -14,6 +14,9 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
 
   useEffect(() => {
     if (open) {
+      // Mounting before the next painted frame is intentional: it lets the
+      // panel animate from its off-screen state instead of appearing in place.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMounted(true);
       return;
     }

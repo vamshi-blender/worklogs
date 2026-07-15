@@ -38,4 +38,6 @@ cd chrome-extension
 npm run dev
 ```
 
-Runs Vite with HMR — load `dist/` the same way as above; changes apply live without a manual rebuild.
+Runs Vite with HMR and writes to `dist/` too — load it the same way as above; changes apply live without a manual rebuild, as long as this command keeps running.
+
+**`dev` vs `build`:** both write to `dist/`, so only one should be active at a time. If you switch from one to the other, stop the running command, delete `dist/`, run the other, then reload the extension.

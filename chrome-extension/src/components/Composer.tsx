@@ -7,9 +7,12 @@ const MAX_TEXTAREA_HEIGHT = 200;
 
 interface ComposerProps {
   onSend?: (message: string) => void;
+  busy?: boolean;
+  disabled?: boolean;
+  onCancel?: () => void;
 }
 
-export default function Composer({ onSend }: ComposerProps) {
+export default function Composer({ onSend, busy = false, disabled = false, onCancel }: ComposerProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -24,6 +27,10 @@ export default function Composer({ onSend }: ComposerProps) {
   }
 
   function handleSend() {
+    if (busy) {
+      onCancel?.();
+      return;
+    }
     const trimmed = value.trim();
     if (!trimmed) return;
     onSend?.(trimmed);
@@ -52,6 +59,7 @@ export default function Composer({ onSend }: ComposerProps) {
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}
+        disabled={disabled}
       />
 
       <div className="composer-toolbar">
@@ -65,12 +73,16 @@ export default function Composer({ onSend }: ComposerProps) {
           </button>
           <button
             type="button"
-            className="composer-send-btn"
-            aria-label="Send prompt"
-            disabled={!canSend}
+            className={`composer-send-btn${busy ? " composer-send-btn--stop" : ""}`}
+            aria-label={busy ? "Stop response" : "Send prompt"}
+            disabled={!busy && (!canSend || disabled)}
             onClick={handleSend}
           >
-            <HugeiconsIcon icon={ArrowUp02Icon} size={18} />
+            {busy ? (
+              <span className="composer-stop-glyph" aria-hidden="true" />
+            ) : (
+              <HugeiconsIcon icon={ArrowUp02Icon} size={18} />
+            )}
           </button>
         </div>
       </div>

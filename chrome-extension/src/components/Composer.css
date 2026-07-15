@@ -28,6 +28,11 @@
   color: var(--text-tertiary);
 }
 
+.composer-textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;
@@ -82,4 +87,16 @@
 
 .composer-send-btn:not(:disabled):hover {
   background: var(--accent-fill-hover);
+}
+
+.composer-send-btn--stop {
+  background: var(--accent-fill);
+  cursor: pointer;
+}
+
+.composer-stop-glyph {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: currentColor;
 }

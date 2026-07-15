@@ -1,4 +1,3 @@
-import { useMemo } from "react";
 import "./Greeting.css";
 
 interface GreetingProps {
@@ -6,10 +5,9 @@ interface GreetingProps {
 }
 
 export default function Greeting({ userName }: GreetingProps) {
-  const text = useMemo(() => {
-    const variants = [`How can I help, ${userName}?`, `Hey, ${userName}. Ready to dive in?`];
-    return variants[Math.floor(Math.random() * variants.length)];
-  }, [userName]);
+  const variants = [`How can I help, ${userName}?`, `Hey, ${userName}. Ready to dive in?`];
+  const nameScore = [...userName].reduce((sum, character) => sum + character.charCodeAt(0), 0);
+  const text = variants[nameScore % variants.length];
 
   return <h1 className="greeting">{text}</h1>;
 }

@@ -5,8 +5,10 @@ export default defineManifest({
   name: "Donna",
   version: "1.0.0",
   description:
-    "One UI that runs as a toolbar popup or a side panel — switchable from inside the extension.",
-  permissions: ["sidePanel", "storage"],
+    "Donna opens in a floating pop-out window, with optional popup and side-panel modes.",
+  permissions: ["activeTab", "scripting", "sidePanel", "storage"],
+  host_permissions: ["http://localhost:3000/*", "http://127.0.0.1:3000/*"],
+  optional_host_permissions: ["https://*/*"],
   icons: {
     16: "public/icons/icon16.png",
     32: "public/icons/icon32.png",
@@ -14,7 +16,6 @@ export default defineManifest({
     128: "public/icons/icon128.png",
   },
   action: {
-    default_popup: "src/popup.html",
     default_title: "Donna",
     default_icon: {
       16: "public/icons/icon16.png",
