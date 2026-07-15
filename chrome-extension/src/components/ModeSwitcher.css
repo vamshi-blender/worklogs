@@ -17,6 +17,16 @@
   padding: var(--space-3);
 }
 
+.mode-switcher fieldset + fieldset {
+  margin-top: var(--space-3);
+}
+
+.theme-toggle-row {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .mode-switcher legend {
   font-size: var(--text-xs-size);
   font-weight: var(--font-weight-semibold);

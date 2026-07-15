@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { applyMode, getSavedMode, type DisplayMode } from "../mode";
+import { applyTheme, getSavedTheme, type Theme } from "../theme";
 import "./ModeSwitcher.css";
 
 const CTX_LABELS: Record<DisplayMode, string> = {
@@ -14,12 +15,21 @@ interface ModeSwitcherProps {
 
 export default function ModeSwitcher({ ctx }: ModeSwitcherProps) {
   const [mode, setMode] = useState<DisplayMode | null>(null);
+  const [theme, setTheme] = useState<Theme | null>(null);
   const [hint, setHint] = useState("");
   const switching = useRef(false);
 
   useEffect(() => {
     getSavedMode().then(setMode);
+    getSavedTheme().then(setTheme);
   }, []);
+
+  async function onToggleTheme() {
+    const next: Theme = theme === "light" ? "dark" : "light";
+    setTheme(next);
+    applyTheme(next);
+    await chrome.storage.sync.set({ theme: next });
+  }
 
   async function onSelect(next: DisplayMode) {
     if (switching.current || next === ctx) {
@@ -81,6 +91,18 @@ export default function ModeSwitcher({ ctx }: ModeSwitcherProps) {
       <p className="mode-switcher-context">
         Running as: <strong>{CTX_LABELS[ctx]}</strong>
       </p>
+
+      <fieldset>
+        <legend>Appearance</legend>
+        <label className="theme-toggle-row">
+          <span>Light theme</span>
+          <input
+            type="checkbox"
+            checked={theme === "light"}
+            onChange={onToggleTheme}
+          />
+        </label>
+      </fieldset>
 
       <fieldset>
         <legend>Display mode</legend>
