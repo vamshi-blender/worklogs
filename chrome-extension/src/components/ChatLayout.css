@@ -1,0 +1,152 @@
+.chat-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+}
+
+.chat-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2);
+  flex-shrink: 0;
+}
+
+.chat-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settings-anchor {
+  position: relative;
+}
+
+.settings-popover {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-divider);
+  border-radius: var(--radius-card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+}
+
+.chat-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: var(--space-4);
+}
+
+.chat-thread {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-scroll {
+  height: 100%;
+  overflow-y: auto;
+  padding: 0 var(--space-4);
+  box-sizing: border-box;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge */
+}
+
+.chat-scroll::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+
+.chat-scroll-spacer {
+  height: 96px;
+}
+
+.chat-composer-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: var(--space-6) var(--space-4) var(--space-4);
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--surface-canvas) 55%,
+    var(--surface-canvas) 100%
+  );
+  pointer-events: none;
+}
+
+.chat-composer-dock .chat-composer-area {
+  pointer-events: auto;
+}
+
+.chat-composer-area {
+  width: 100%;
+  max-width: var(--composer-max-width);
+  margin: 0 auto;
+}
+
+/* Temporary placeholders — swap for real components as they're built. */
+.placeholder-box {
+  background: var(--surface-hover);
+  border: 1px dashed var(--border-divider);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-button-size);
+  height: var(--icon-button-size);
+  border: none;
+  border-radius: var(--radius-row);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.icon-button:hover {
+  background: var(--surface-hover);
+}
+
+.pill-button {
+  height: var(--icon-button-size);
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm-size);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--text-sm-line);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  white-space: nowrap;
+}
+
+.pill-button--primary {
+  background: var(--accent-fill);
+  color: var(--text-on-accent);
+}
+
+.pill-button--primary:hover {
+  background: var(--accent-fill-hover);
+}
+
+.pill-button--secondary {
+  background: var(--surface-secondary-button);
+  color: var(--text-primary);
+  border-color: var(--border-divider);
+}
+
+.pill-button--secondary:hover {
+  background: var(--surface-secondary-button-hover);
+}
+

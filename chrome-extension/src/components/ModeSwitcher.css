@@ -1,0 +1,45 @@
+.mode-switcher {
+  padding: var(--space-4);
+  width: 260px;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+}
+
+.mode-switcher-context {
+  font-size: var(--text-xs-size);
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-4);
+}
+
+.mode-switcher fieldset {
+  border: 1px solid var(--border-divider);
+  border-radius: var(--radius-card);
+  padding: var(--space-3);
+}
+
+.mode-switcher legend {
+  font-size: var(--text-xs-size);
+  font-weight: var(--font-weight-semibold);
+  padding: 0 var(--space-1);
+  color: var(--text-primary);
+}
+
+.mode-switcher label {
+  display: block;
+  font-size: var(--text-xs-size);
+  padding: var(--space-2) 0;
+  color: var(--text-primary);
+  cursor: pointer;
+  border-radius: var(--radius-row);
+  transition: background var(--transition-fast);
+}
+
+.mode-switcher label:hover {
+  background: var(--surface-hover);
+}
+
+.mode-switcher .hint {
+  font-size: var(--text-xs-size);
+  color: var(--text-secondary);
+  margin-top: var(--space-3);
+}

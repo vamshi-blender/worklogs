@@ -1,0 +1,85 @@
+.composer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  background: var(--surface-composer);
+  border: 1px solid var(--border-composer);
+  border-radius: var(--radius-composer);
+  padding: var(--composer-padding-y) var(--composer-padding-x);
+  box-sizing: border-box;
+}
+
+.composer-textarea {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base-size);
+  line-height: var(--text-composer-line);
+  max-height: 200px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.composer-textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+}
+
+.composer-trailing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.composer-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-button-size);
+  height: var(--icon-button-size);
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.composer-icon-btn:hover {
+  background: var(--surface-hover);
+}
+
+.composer-send-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-button-size);
+  height: var(--icon-button-size);
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--accent-muted);
+  color: var(--text-on-accent);
+  cursor: not-allowed;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.composer-send-btn:not(:disabled) {
+  background: var(--accent-fill);
+  cursor: pointer;
+}
+
+.composer-send-btn:not(:disabled):hover {
+  background: var(--accent-fill-hover);
+}
