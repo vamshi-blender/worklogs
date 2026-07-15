@@ -1,5 +1,6 @@
+import { useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Copy01Icon, Upload01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Tick01Icon, Upload01Icon } from "@hugeicons/core-free-icons";
 import "./MessageList.css";
 
 export interface ChatMessage {
@@ -13,7 +14,19 @@ interface MessageListProps {
   messages: ChatMessage[];
 }
 
+const COPIED_RESET_MS = 2000;
+
 export default function MessageList({ messages }: MessageListProps) {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const resetTimeout = useRef<ReturnType<typeof setTimeout>>();
+
+  async function handleCopy(message: ChatMessage) {
+    await navigator.clipboard.writeText(message.content);
+    setCopiedId(message.id);
+    clearTimeout(resetTimeout.current);
+    resetTimeout.current = setTimeout(() => setCopiedId(null), COPIED_RESET_MS);
+  }
+
   return (
     <div className="message-list">
       {messages.map((message) => (
@@ -30,8 +43,13 @@ export default function MessageList({ messages }: MessageListProps) {
               </div>
               {message.status === "done" && (
                 <div className="message-actions">
-                  <button type="button" className="message-action-btn" aria-label="Copy response">
-                    <HugeiconsIcon icon={Copy01Icon} size={20} />
+                  <button
+                    type="button"
+                    className="message-action-btn"
+                    aria-label="Copy response"
+                    onClick={() => handleCopy(message)}
+                  >
+                    <HugeiconsIcon icon={copiedId === message.id ? Tick01Icon : Copy01Icon} size={20} />
                   </button>
                   <button type="button" className="message-action-btn" aria-label="Share">
                     <HugeiconsIcon icon={Upload01Icon} size={20} />
