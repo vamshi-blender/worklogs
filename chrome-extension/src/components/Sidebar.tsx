@@ -5,12 +5,17 @@ import {
   Cancel01Icon,
   Delete02Icon,
   Edit03Icon,
+  Moon02Icon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  SaveIcon,
   Search01Icon,
+  Sun03Icon,
 } from "@hugeicons/core-free-icons";
+import { applyTheme, getSavedTheme, type Theme } from "../theme";
+import { getBackendUrl, saveBackendUrl } from "../api/backend";
 import "./Sidebar.css";
 
 const TRANSITION_MS = 220;
@@ -58,8 +63,39 @@ export default function Sidebar({
   const [renameValue, setRenameValue] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteErrorFor, setDeleteErrorFor] = useState<string | null>(null);
+  const [theme, setTheme] = useState<Theme | null>(null);
+  const [backendUrl, setBackendUrl] = useState("");
+  const [backendDraft, setBackendDraft] = useState("");
+  const [backendHint, setBackendHint] = useState("");
   const menuAnchorRef = useRef<HTMLDivElement>(null);
   const renameCancelledRef = useRef(false);
+
+  useEffect(() => {
+    getSavedTheme().then(setTheme);
+    getBackendUrl().then((url) => {
+      setBackendUrl(url);
+      setBackendDraft(url);
+    });
+  }, []);
+
+  async function onToggleTheme() {
+    const next: Theme = theme === "light" ? "dark" : "light";
+    setTheme(next);
+    applyTheme(next);
+    await chrome.storage.sync.set({ theme: next });
+  }
+
+  async function onSaveBackend() {
+    setBackendHint("");
+    try {
+      const saved = await saveBackendUrl(backendDraft);
+      setBackendUrl(saved);
+      setBackendDraft(saved);
+      setBackendHint("Backend saved.");
+    } catch (error) {
+      setBackendHint(error instanceof Error ? error.message : "Could not save backend.");
+    }
+  }
 
   useEffect(() => {
     if (open) {
@@ -121,8 +157,6 @@ export default function Sidebar({
   }
 
   async function deleteChat(chat: SidebarChat) {
-    if (!window.confirm(`Delete “${chat.title}”? This cannot be undone.`)) return;
-
     setDeletingId(chat.id);
     setDeleteErrorFor(null);
     const deleted = await onDeleteChat(chat.id);
@@ -362,15 +396,53 @@ export default function Sidebar({
           )}
         </div>
 
-        <button type="button" className="sidebar-user-row">
-          <span className="sidebar-user-avatar" aria-hidden="true">
-            {CURRENT_USER_NAME.charAt(0)}
-          </span>
-          <span className="sidebar-user-info">
-            <span className="sidebar-user-name">{CURRENT_USER_NAME}</span>
-            <span className="sidebar-user-plan">{CURRENT_USER_PLAN}</span>
-          </span>
-        </button>
+        <div className="sidebar-backend-row">
+          <label className="backend-url-label" htmlFor="sidebar-backend-url">
+            Donna backend URL
+          </label>
+          <div className="backend-url-row">
+            <input
+              id="sidebar-backend-url"
+              type="url"
+              value={backendDraft}
+              onChange={(event) => setBackendDraft(event.target.value)}
+              placeholder="http://localhost:3000"
+              spellCheck={false}
+            />
+            <button
+              type="button"
+              className="backend-url-save-btn"
+              onClick={onSaveBackend}
+              disabled={!backendDraft.trim() || backendDraft === backendUrl}
+              aria-label="Save backend URL"
+            >
+              <HugeiconsIcon icon={SaveIcon} size={16} />
+            </button>
+          </div>
+          {backendHint && <p className="hint">{backendHint}</p>}
+        </div>
+
+        <div className="sidebar-footer">
+          <button type="button" className="sidebar-user-row">
+            <span className="sidebar-user-avatar" aria-hidden="true">
+              {CURRENT_USER_NAME.charAt(0)}
+            </span>
+            <span className="sidebar-user-info">
+              <span className="sidebar-user-name">{CURRENT_USER_NAME}</span>
+              <span className="sidebar-user-plan">{CURRENT_USER_PLAN}</span>
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className="theme-toggle-btn"
+            aria-pressed={theme === "light"}
+            onClick={onToggleTheme}
+            aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
+          >
+            <HugeiconsIcon icon={theme === "light" ? Moon02Icon : Sun03Icon} size={18} />
+          </button>
+        </div>
       </aside>
     </>
   );

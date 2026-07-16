@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MenuTwoLineIcon } from "@hugeicons/core-free-icons";
-import type { DisplayMode } from "../mode";
-import ModeSwitcher from "./ModeSwitcher";
+import {
+  MenuTwoLineIcon,
+  PanelRightIcon,
+  PictureInPictureOnIcon,
+  PlusSignIcon,
+} from "@hugeicons/core-free-icons";
+import { getSavedMode, switchMode, type DisplayMode } from "../mode";
 import Sidebar, { type SidebarChat } from "./Sidebar";
 import Composer from "./Composer";
 import Greeting from "./Greeting";
@@ -34,8 +38,9 @@ interface ChatLayoutProps {
 }
 
 export default function ChatLayout({ ctx }: ChatLayoutProps) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [displayMode, setDisplayMode] = useState<DisplayMode | null>(null);
+  const [modeHint, setModeHint] = useState("");
   const [chatStore, setChatStore] = useState<StoredChatStore>(EMPTY_CHAT_STORE);
   const [busy, setBusy] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -44,7 +49,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   const composerDockRef = useRef<HTMLDivElement>(null);
   const activeRequestRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
-  const settingsAnchorRef = useRef<HTMLDivElement>(null);
+  const modeSwitchingRef = useRef(false);
 
   const activeChat =
     chatStore.chats.find((chat) => chat.id === chatStore.activeChatId) ?? null;
@@ -125,17 +130,20 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   }, [hasMessages]);
 
   useEffect(() => {
-    if (!settingsOpen) return;
+    getSavedMode().then(setDisplayMode);
+  }, []);
 
-    function handlePointerDown(event: PointerEvent) {
-      if (!settingsAnchorRef.current?.contains(event.target as Node)) {
-        setSettingsOpen(false);
-      }
+  async function handleToggleDisplayMode(next: DisplayMode) {
+    if (modeSwitchingRef.current || next === displayMode) return;
+    modeSwitchingRef.current = true;
+    setModeHint("");
+    setDisplayMode(next);
+    try {
+      await switchMode(next, ctx, setModeHint);
+    } finally {
+      modeSwitchingRef.current = false;
     }
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [settingsOpen]);
+  }
 
   function setBusyState(next: boolean) {
     busyRef.current = next;
@@ -448,35 +456,45 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         <div className="chat-topbar-brand">
           <button
             type="button"
-            className="icon-button sidebar-trigger"
+            className="icon-button sidebar-trigger app-tooltip app-tooltip--bottom app-tooltip--start"
             onClick={() => setSidebarOpen(true)}
             aria-label="Open sidebar"
+            data-tooltip="Open sidebar"
           >
             <HugeiconsIcon icon={MenuTwoLineIcon} size={20} />
           </button>
           <span className="chat-brand-name">Donna</span>
         </div>
         <div className="chat-topbar-actions">
-          <button type="button" className="pill-button pill-button--primary" onClick={handleNewChat}>
-            New chat
+          <button
+            type="button"
+            className="icon-button app-tooltip app-tooltip--bottom"
+            onClick={handleNewChat}
+            aria-label="New chat"
+            data-tooltip="New chat"
+          >
+            <HugeiconsIcon icon={PlusSignIcon} size={20} />
           </button>
-          <div className="settings-anchor" ref={settingsAnchorRef}>
-            <button
-              type="button"
-              className="pill-button pill-button--secondary"
-              onClick={() => setSettingsOpen((open) => !open)}
-              aria-expanded={settingsOpen}
-            >
-              Settings
-            </button>
-            {settingsOpen && (
-              <div className="settings-popover">
-                <ModeSwitcher ctx={ctx} />
-              </div>
-            )}
-          </div>
+          <button
+            type="button"
+            className="display-mode-toggle-btn app-tooltip app-tooltip--bottom app-tooltip--end"
+            aria-pressed={displayMode === "sidepanel"}
+            onClick={() =>
+              handleToggleDisplayMode(displayMode === "sidepanel" ? "popout" : "sidepanel")
+            }
+            aria-label={
+              displayMode === "sidepanel" ? "Switch to pop-out window" : "Switch to side panel"
+            }
+            data-tooltip={displayMode === "sidepanel" ? "Pop out window" : "Side panel"}
+          >
+            <HugeiconsIcon
+              icon={displayMode === "sidepanel" ? PictureInPictureOnIcon : PanelRightIcon}
+              size={20}
+            />
+          </button>
         </div>
       </header>
+      {modeHint && <p className="chat-topbar-hint">{modeHint}</p>}
 
       {hasMessages ? (
         <div className="chat-thread">

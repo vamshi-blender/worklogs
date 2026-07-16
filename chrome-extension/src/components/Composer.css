@@ -46,6 +46,64 @@
   gap: var(--space-2);
 }
 
+.composer-tooltip {
+  position: relative;
+}
+
+.composer-tooltip::before,
+.composer-tooltip::after {
+  position: absolute;
+  left: 50%;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--transition-fast), transform var(--transition-fast), visibility var(--transition-fast);
+}
+
+.composer-tooltip::before {
+  content: "";
+  bottom: calc(100% + 4px);
+  width: 7px;
+  height: 7px;
+  background: var(--text-primary);
+  transform: translate(-50%, 3px) rotate(45deg);
+}
+
+.composer-tooltip::after {
+  content: attr(data-tooltip);
+  bottom: calc(100% + 8px);
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--text-primary);
+  color: var(--surface-canvas);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs-size);
+  font-weight: var(--font-weight-medium);
+  line-height: 16px;
+  white-space: nowrap;
+  transform: translate(-50%, 4px);
+}
+
+.composer-tooltip:hover::before,
+.composer-tooltip:hover::after,
+.composer-tooltip:focus-visible::before,
+.composer-tooltip:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+.composer-tooltip:hover::before,
+.composer-tooltip:focus-visible::before {
+  transform: translate(-50%, 0) rotate(45deg);
+}
+
+.composer-tooltip:hover::after,
+.composer-tooltip:focus-visible::after {
+  transform: translate(-50%, 0);
+}
+
 .composer-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -63,6 +121,26 @@
 
 .composer-icon-btn:hover {
   background: var(--surface-hover);
+}
+
+.composer-icon-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.composer-icon-btn--recording,
+.composer-icon-btn--recording:hover {
+  background: var(--status-danger-soft);
+  color: var(--status-danger);
+}
+
+.composer-icon-btn--loading:disabled {
+  opacity: 1;
+}
+
+.composer-mic-loading-icon {
+  display: inline-flex;
+  animation: composer-spinner 0.75s linear infinite;
 }
 
 .composer-send-btn {
@@ -99,4 +177,14 @@
   height: 8px;
   border-radius: 2px;
   background: currentColor;
+}
+
+@keyframes composer-spinner {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-mic-loading-icon {
+    animation: none;
+  }
 }

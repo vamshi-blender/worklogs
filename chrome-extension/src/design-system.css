@@ -33,6 +33,8 @@
   --accent-fill: #f9f9f9;          /* primary CTA pill background (Log in, active send button) */
   --accent-fill-hover: #e9e9e9;
   --accent-muted: rgba(255, 255, 255, 0.41); /* disabled/inactive send button */
+  --status-danger: #f06a6a;
+  --status-danger-soft: rgba(240, 106, 106, 0.14);
 
   /* Radius */
   --radius-full: 9999px;       /* send button, plus button, pill CTAs */
@@ -43,6 +45,7 @@
 
   /* Spacing scale (px) */
   --space-1: 4px;
+  --space-1-5: 6px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
@@ -107,4 +110,6 @@
   --accent-fill: #0d0d0d;
   --accent-fill-hover: #2a2a2a;
   --accent-muted: rgba(0, 0, 0, 0.35);
+  --status-danger: #c93636;
+  --status-danger-soft: rgba(201, 54, 54, 0.1);
 }

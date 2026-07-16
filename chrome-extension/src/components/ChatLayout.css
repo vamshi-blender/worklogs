@@ -30,24 +30,154 @@
 .chat-topbar-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
 
-.settings-anchor {
+.display-mode-toggle-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-row);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.display-mode-toggle-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.app-tooltip {
   position: relative;
 }
 
-.settings-popover {
+.app-tooltip::before,
+.app-tooltip::after {
   position: absolute;
-  top: calc(100% + var(--space-2));
-  right: 0;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-divider);
-  border-radius: var(--radius-card);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  left: 50%;
   z-index: 10;
-  max-height: calc(100vh - 64px);
-  overflow-y: auto;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--transition-fast), transform var(--transition-fast), visibility var(--transition-fast);
+}
+
+.app-tooltip::before {
+  content: "";
+  bottom: calc(100% + 4px);
+  width: 7px;
+  height: 7px;
+  background: var(--text-primary);
+  transform: translate(-50%, 3px) rotate(45deg);
+}
+
+.app-tooltip::after {
+  content: attr(data-tooltip);
+  bottom: calc(100% + 8px);
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--text-primary);
+  color: var(--surface-canvas);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs-size);
+  font-weight: var(--font-weight-medium);
+  line-height: 16px;
+  white-space: nowrap;
+  transform: translate(-50%, 4px);
+}
+
+.app-tooltip:hover::before,
+.app-tooltip:hover::after,
+.app-tooltip:focus-visible::before,
+.app-tooltip:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+}
+
+.app-tooltip:hover::before,
+.app-tooltip:focus-visible::before {
+  transform: translate(-50%, 0) rotate(45deg);
+}
+
+.app-tooltip:hover::after,
+.app-tooltip:focus-visible::after {
+  transform: translate(-50%, 0);
+}
+
+.app-tooltip--bottom::before {
+  bottom: auto;
+  top: calc(100% + 4px);
+  transform: translate(-50%, -3px) rotate(45deg);
+}
+
+.app-tooltip--bottom::after {
+  bottom: auto;
+  top: calc(100% + 8px);
+  transform: translate(-50%, -4px);
+}
+
+.app-tooltip--bottom:hover::before,
+.app-tooltip--bottom:focus-visible::before {
+  transform: translate(-50%, 0) rotate(45deg);
+}
+
+.app-tooltip--bottom:hover::after,
+.app-tooltip--bottom:focus-visible::after {
+  transform: translate(-50%, 0);
+}
+
+.app-tooltip--start::after {
+  left: 0;
+  transform: translate(0, 4px);
+}
+
+.app-tooltip--start:hover::after,
+.app-tooltip--start:focus-visible::after {
+  transform: translate(0, 0);
+}
+
+.app-tooltip--start.app-tooltip--bottom::after {
+  transform: translate(0, -4px);
+}
+
+.app-tooltip--start.app-tooltip--bottom:hover::after,
+.app-tooltip--start.app-tooltip--bottom:focus-visible::after {
+  transform: translate(0, 0);
+}
+
+.app-tooltip--end::after {
+  left: auto;
+  right: 0;
+  transform: translate(0, 4px);
+}
+
+.app-tooltip--end:hover::after,
+.app-tooltip--end:focus-visible::after {
+  transform: translate(0, 0);
+}
+
+.app-tooltip--end.app-tooltip--bottom::after {
+  transform: translate(0, -4px);
+}
+
+.app-tooltip--end.app-tooltip--bottom:hover::after,
+.app-tooltip--end.app-tooltip--bottom:focus-visible::after {
+  transform: translate(0, 0);
+}
+
+.chat-topbar-hint {
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-2);
+  font-size: var(--text-xs-size);
+  color: var(--text-secondary);
+  text-align: right;
 }
 
 .chat-main {
