@@ -7,7 +7,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import type { ClientToolRequest } from "../api/protocol";
+import type { ToolApprovalRequest } from "../api/protocol";
 import "katex/dist/katex.min.css";
 import "./MessageList.css";
 
@@ -17,13 +17,14 @@ export interface ChatMessage {
   content: string;
   status?: "pending" | "streaming" | "approval" | "done" | "error";
   error?: string;
-  toolRequest?: ClientToolRequest;
+  toolRequest?: ToolApprovalRequest;
 }
 
 interface MessageListProps {
   messages: ChatMessage[];
   onApproveTool?: (messageId: string) => void;
   onRejectTool?: (messageId: string) => void;
+  onInstructTool?: (messageId: string, instruction: string) => void;
   onRetry?: (messageId: string) => void;
 }
 
@@ -575,10 +576,25 @@ export default function MessageList({
   messages,
   onApproveTool,
   onRejectTool,
+  onInstructTool,
   onRetry,
 }: MessageListProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [instructingId, setInstructingId] = useState<string | null>(null);
+  const [instructionValue, setInstructionValue] = useState("");
   const resetTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  function closeInstruction() {
+    setInstructingId(null);
+    setInstructionValue("");
+  }
+
+  function submitInstruction(messageId: string) {
+    const instruction = instructionValue.trim();
+    if (!instruction) return;
+    closeInstruction();
+    onInstructTool?.(messageId, instruction);
+  }
 
   async function handleCopy(message: ChatMessage) {
     await navigator.clipboard.writeText(message.content);
@@ -620,10 +636,24 @@ export default function MessageList({
               )}
               {message.status === "approval" && message.toolRequest && (
                 <div className="tool-approval" role="group" aria-label={message.toolRequest.title}>
-                  <div className="tool-approval-eyebrow">Page access</div>
+                  <div className="tool-approval-eyebrow">Approval needed</div>
                   <strong>{message.toolRequest.title}</strong>
                   <p>{message.toolRequest.description}</p>
                   <div className="tool-approval-actions">
+                    <button
+                      type="button"
+                      aria-expanded={instructingId === message.id}
+                      onClick={() => {
+                        if (instructingId === message.id) {
+                          closeInstruction();
+                        } else {
+                          setInstructionValue("");
+                          setInstructingId(message.id);
+                        }
+                      }}
+                    >
+                      Do this instead
+                    </button>
                     <button type="button" onClick={() => onRejectTool?.(message.id)}>
                       Not now
                     </button>
@@ -632,9 +662,29 @@ export default function MessageList({
                       className="tool-approval-allow"
                       onClick={() => onApproveTool?.(message.id)}
                     >
-                      Allow once
+                      {message.toolRequest.confirmLabel || "Allow"}
                     </button>
                   </div>
+                  {instructingId === message.id && (
+                    <input
+                      className="tool-approval-instruction"
+                      autoFocus
+                      maxLength={2000}
+                      placeholder="Tell Donna what to do instead"
+                      aria-label="Tell Donna what to do instead"
+                      value={instructionValue}
+                      onChange={(event) => setInstructionValue(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          submitInstruction(message.id);
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          closeInstruction();
+                        }
+                      }}
+                    />
+                  )}
                 </div>
               )}
               {message.status === "error" && (

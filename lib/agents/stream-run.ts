@@ -7,9 +7,12 @@ import {
 import { donnaAgent, type DonnaRunContext } from "./donna";
 import { savePendingRun } from "./pending-runs";
 import {
+  CONFIRM_LABELS,
   encodeEvent,
   type ChatStreamEvent,
   type ClientToolName,
+  type ConfirmLabel,
+  type ToolExecutor,
 } from "./protocol";
 
 const CLIENT_TOOL_NAMES = new Set<ClientToolName>([
@@ -22,16 +25,16 @@ interface StreamDonnaRunOptions {
   signal: AbortSignal;
 }
 
-function asClientToolInterruption(
+function asToolApprovalInterruption(
   interruption: RunToolApprovalItem,
 ): {
   toolCallId: string;
-  name: ClientToolName;
+  name: string;
+  executor: ToolExecutor;
   arguments: Record<string, unknown>;
 } | null {
   const { rawItem } = interruption;
   if (rawItem.type !== "function_call") return null;
-  if (!CLIENT_TOOL_NAMES.has(rawItem.name as ClientToolName)) return null;
 
   let parsedArguments: unknown;
   try {
@@ -50,9 +53,35 @@ function asClientToolInterruption(
 
   return {
     toolCallId: rawItem.callId,
-    name: rawItem.name as ClientToolName,
+    name: rawItem.name,
+    executor: CLIENT_TOOL_NAMES.has(rawItem.name as ClientToolName)
+      ? "client"
+      : "server",
     arguments: parsedArguments as Record<string, unknown>,
   };
+}
+
+// The model generates the approval texts as part of the tool call itself
+// (see approvalPresentationFields in donna.ts). Fall back to generic copy if
+// a field is missing or malformed so the approval card never renders empty.
+function approvalPresentation(args: Record<string, unknown>): {
+  title: string;
+  description: string;
+  confirmLabel: ConfirmLabel;
+} {
+  const title =
+    typeof args.approvalTitle === "string" && args.approvalTitle.trim()
+      ? args.approvalTitle.trim().slice(0, 80)
+      : "Allow Donna to perform this action?";
+  const description =
+    typeof args.approvalDescription === "string" && args.approvalDescription.trim()
+      ? args.approvalDescription.trim().slice(0, 240)
+      : "Donna needs your approval before it can continue with this request.";
+  const confirmLabel = CONFIRM_LABELS.includes(args.confirmLabel as ConfirmLabel)
+    ? (args.confirmLabel as ConfirmLabel)
+    : "Allow";
+
+  return { title, description, confirmLabel };
 }
 
 function publicError(error: unknown): ChatStreamEvent {
@@ -103,41 +132,69 @@ export function streamDonnaRun({
               }),
         });
 
+        let startsNewSegment = true;
+
         for await (const event of result) {
+          if (
+            event.type === "run_item_stream_event" &&
+            event.name === "message_output_created"
+          ) {
+            startsNewSegment = true;
+            continue;
+          }
+
           if (
             event.type === "raw_model_stream_event" &&
             event.data.type === "output_text_delta"
           ) {
-            send({ type: "response.delta", delta: event.data.delta });
+            if (!event.data.delta) continue;
+
+            send({
+              type: "response.delta",
+              delta: event.data.delta,
+              ...(startsNewSegment ? { startsNewSegment: true } : {}),
+            });
+            startsNewSegment = false;
           }
         }
 
         await result.completed;
 
-        const interruption = result.interruptions
-          .map((item) => ({ item, clientTool: asClientToolInterruption(item) }))
-          .find(({ clientTool }) => clientTool !== null);
+        const approval = result.interruptions
+          .map(asToolApprovalInterruption)
+          .find((candidate) => candidate !== null);
 
-        if (interruption?.clientTool) {
+        if (approval) {
           const runId = savePendingRun({
             serializedState: result.state.toString(),
             conversationId,
-            toolCallId: interruption.clientTool.toolCallId,
-            toolName: interruption.clientTool.name,
+            toolCallId: approval.toolCallId,
+            toolName: approval.name,
+            executor: approval.executor,
           });
 
           send({
-            type: "client_tool.request",
+            type: "tool_approval.request",
             runId,
-            toolCallId: interruption.clientTool.toolCallId,
-            name: interruption.clientTool.name,
-            arguments: interruption.clientTool.arguments,
-            title: "Allow Donna to read this page?",
-            description:
-              "Shares the active tab's URL, title, selected text, and a limited amount of visible page text for this request.",
+            toolCallId: approval.toolCallId,
+            name: approval.name,
+            executor: approval.executor,
+            arguments: approval.arguments,
+            ...approvalPresentation(approval.arguments),
             requiresApproval: true,
           });
           send({ type: "response.paused", runId });
+          return;
+        }
+
+        if (result.interruptions.length > 0) {
+          // A paused run we cannot surface must not masquerade as a completed
+          // response — the user would wait on an answer that never arrives.
+          send({
+            type: "response.error",
+            code: "unsupported_interruption",
+            message: "Donna paused for an approval it could not display. Please try again.",
+          });
           return;
         }
 

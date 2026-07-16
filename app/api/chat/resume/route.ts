@@ -14,6 +14,8 @@ const resumeRequestSchema = z
     approved: z.boolean(),
     result: z.unknown().optional(),
     error: z.string().max(1_000).optional(),
+    // User-provided alternative instruction; only meaningful with approved: false.
+    instruction: z.string().min(1).max(2_000).optional(),
   })
   .strict();
 
@@ -65,22 +67,30 @@ export async function POST(request: Request) {
     );
   }
 
-  const clientResult: ClientToolResult = parsed.data.approved
-    ? { ok: true, data: parsed.data.result }
-    : {
-        ok: false,
-        error: parsed.data.error ?? "The user declined page access.",
-      };
+  // Client-executed tools return their result from the browser; the tool's
+  // execute() reads it out of the run context. Server-executed tools run on
+  // approval inside the SDK, so no client result is expected or stored.
+  const clientToolResults: Record<string, ClientToolResult> = {};
+  if (pending.executor === "client") {
+    const clientResult: ClientToolResult = parsed.data.approved
+      ? { ok: true, data: parsed.data.result }
+      : {
+          ok: false,
+          error: parsed.data.error ?? "The user declined this request.",
+        };
 
-  if (JSON.stringify(clientResult).length > 60_000) {
-    return Response.json(
-      { error: "The browser tool result is too large." },
-      { status: 413, headers: corsHeaders(origin) },
-    );
+    if (JSON.stringify(clientResult).length > 60_000) {
+      return Response.json(
+        { error: "The browser tool result is too large." },
+        { status: 413, headers: corsHeaders(origin) },
+      );
+    }
+
+    clientToolResults[pending.toolCallId] = clientResult;
   }
 
   const state = await restoreRunState(pending.serializedState, {
-    clientToolResults: { [pending.toolCallId]: clientResult },
+    clientToolResults,
   });
   const interruption = state
     .getInterruptions()
@@ -101,8 +111,13 @@ export async function POST(request: Request) {
   if (parsed.data.approved) {
     state.approve(interruption);
   } else {
+    // The rejection message is delivered to the model as the tool call's
+    // output, so an alternative instruction rides along in the same resumed
+    // run — no extra model turn needed.
     state.reject(interruption, {
-      message: parsed.data.error ?? "The user declined page access.",
+      message: parsed.data.instruction
+        ? `The user declined this tool call and instead asked: "${parsed.data.instruction}". Follow the user's instruction.`
+        : parsed.data.error ?? "The user declined this request.",
     });
   }
 

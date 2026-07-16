@@ -547,6 +547,29 @@
   background: var(--accent-fill-hover);
 }
 
+.tool-approval-instruction {
+  width: 100%;
+  margin-top: var(--space-2);
+  height: 32px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-divider);
+  border-radius: 8px;
+  outline: none;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--text-xs-size);
+}
+
+.tool-approval-instruction::placeholder {
+  color: var(--text-tertiary);
+}
+
+.tool-approval-instruction:focus {
+  border-color: var(--text-secondary);
+}
+
 .message-error {
   display: flex;
   align-items: center;

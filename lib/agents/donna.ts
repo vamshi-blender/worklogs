@@ -1,5 +1,6 @@
 import { Agent, tool } from "@openai/agents";
 import { z } from "zod";
+import { CONFIRM_LABELS } from "./protocol";
 
 export interface ClientToolResult {
   ok: boolean;
@@ -48,10 +49,34 @@ const getServerTime = tool({
   },
 });
 
+// Every tool that needsApproval must include these fields in its parameters.
+// The model fills them when it makes the tool call, so the approval card the
+// user sees is specific to what the tool is about to do.
+const approvalPresentationFields = {
+  approvalTitle: z
+    .string()
+    .min(1)
+    .max(80)
+    .describe(
+      "Short question asking the user to approve this exact action, specific to the current request — never a generic permission prompt.",
+    ),
+  approvalDescription: z
+    .string()
+    .min(1)
+    .max(240)
+    .describe(
+      "One or two sentences telling the user precisely what will happen and what data is involved, phrased for this specific request.",
+    ),
+  confirmLabel: z
+    .enum(CONFIRM_LABELS)
+    .describe("The approve-button verb that best matches the action."),
+};
+
 const pageContextParameters = z
   .object({
     includeSelection: z.boolean(),
     maxCharacters: z.number().int().min(500).max(12_000),
+    ...approvalPresentationFields,
   })
   .strict();
 

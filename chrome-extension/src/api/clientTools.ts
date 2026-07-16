@@ -1,4 +1,4 @@
-import type { ClientToolRequest } from "./protocol";
+import type { ToolApprovalRequest } from "./protocol";
 
 interface PageContextArguments {
   includeSelection: boolean;
@@ -42,8 +42,8 @@ function readPageContext(options: PageContextArguments) {
   };
 }
 
-export async function executeClientTool(request: ClientToolRequest) {
-  if (request.name !== "get_current_page_context") {
+export async function executeClientTool(request: ToolApprovalRequest) {
+  if (request.executor !== "client" || request.name !== "get_current_page_context") {
     throw new Error("Donna requested a browser tool that is not allowed.");
   }
 

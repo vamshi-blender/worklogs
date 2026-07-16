@@ -1,3 +1,5 @@
+import type { ToolExecutor } from "./protocol";
+
 const PENDING_RUN_TTL_MS = 10 * 60 * 1000;
 
 export interface PendingRun {
@@ -5,6 +7,7 @@ export interface PendingRun {
   conversationId: string;
   toolCallId: string;
   toolName: string;
+  executor: ToolExecutor;
   createdAt: number;
 }
 

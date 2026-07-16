@@ -92,6 +92,7 @@ export function resumeChat(options: {
   approved: boolean;
   result?: unknown;
   error?: string;
+  instruction?: string;
   signal: AbortSignal;
   onEvent: (event: ChatStreamEvent) => void;
 }) {
@@ -103,6 +104,7 @@ export function resumeChat(options: {
       approved: options.approved,
       ...(options.result === undefined ? {} : { result: options.result }),
       ...(options.error ? { error: options.error } : {}),
+      ...(options.instruction ? { instruction: options.instruction } : {}),
     },
     signal: options.signal,
     onEvent: options.onEvent,

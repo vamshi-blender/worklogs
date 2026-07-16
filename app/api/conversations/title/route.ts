@@ -13,7 +13,7 @@ const titleRequestSchema = z
   .strict();
 
 const titleResponseSchema = z.object({
-  title: z.string().trim().min(1).max(56),
+  title: z.string().min(1).max(35),
 });
 
 function unavailableReason(): string | null {
@@ -25,21 +25,6 @@ function unavailableReason(): string | null {
     return "Production chat is disabled until authentication is configured.";
   }
   return null;
-}
-
-function normalizeGeneratedTitle(title: string): string | null {
-  const normalized = title
-    .replace(
-      /^[\s"'\u201c\u201d\u2018\u2019]+|[\s"'\u201c\u201d\u2018\u2019.!?;:]+$/g,
-      "",
-    )
-    .replace(/\s+/g, " ")
-    .trim();
-  const wordCount = normalized ? normalized.split(/\s+/).length : 0;
-
-  return normalized.length <= 56 && wordCount >= 3 && wordCount <= 7
-    ? normalized
-    : null;
 }
 
 export function OPTIONS(request: Request) {
@@ -90,7 +75,7 @@ export async function POST(request: Request) {
         max_output_tokens: 64,
         instructions: [
           "Create a concise title for a chat using only the user's first message.",
-          "Use 3 to 7 words and no more than 56 characters.",
+          "Use 3 to 7 words and no more than 35 characters.",
           "Capture the user's specific topic or intent in the user's language.",
           "Do not answer the message. Do not use quotation marks, emoji, or ending punctuation.",
         ].join(" "),
@@ -102,9 +87,7 @@ export async function POST(request: Request) {
       },
       { signal: request.signal },
     );
-    const title = response.output_parsed
-      ? normalizeGeneratedTitle(response.output_parsed.title)
-      : null;
+    const title = response.output_parsed?.title ?? null;
 
     if (!title) throw new Error("The model returned an invalid conversation title.");
 

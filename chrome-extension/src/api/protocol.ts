@@ -1,19 +1,23 @@
 export type ClientToolName = "get_current_page_context";
 
-export interface ClientToolRequest {
+export type ToolExecutor = "client" | "server";
+
+export interface ToolApprovalRequest {
   runId: string;
   toolCallId: string;
-  name: ClientToolName;
+  name: string;
+  executor: ToolExecutor;
   arguments: Record<string, unknown>;
   title: string;
   description: string;
+  confirmLabel: string;
   requiresApproval: true;
 }
 
 export type ChatStreamEvent =
   | { type: "response.started"; requestId: string; conversationId: string }
-  | { type: "response.delta"; delta: string }
-  | ({ type: "client_tool.request" } & ClientToolRequest)
+  | { type: "response.delta"; delta: string; startsNewSegment?: true }
+  | ({ type: "tool_approval.request" } & ToolApprovalRequest)
   | { type: "response.paused"; runId: string }
   | {
       type: "response.completed";
@@ -28,7 +32,7 @@ export type ChatStreamEvent =
 const EVENT_TYPES = new Set([
   "response.started",
   "response.delta",
-  "client_tool.request",
+  "tool_approval.request",
   "response.paused",
   "response.completed",
   "response.error",

@@ -1,5 +1,18 @@
 export type ClientToolName = "get_current_page_context";
 
+export type ToolExecutor = "client" | "server";
+
+export const CONFIRM_LABELS = [
+  "Allow",
+  "Run",
+  "Send",
+  "Update",
+  "Confirm",
+  "Approve",
+] as const;
+
+export type ConfirmLabel = (typeof CONFIRM_LABELS)[number];
+
 export type ChatStreamEvent =
   | {
       type: "response.started";
@@ -9,15 +22,18 @@ export type ChatStreamEvent =
   | {
       type: "response.delta";
       delta: string;
+      startsNewSegment?: true;
     }
   | {
-      type: "client_tool.request";
+      type: "tool_approval.request";
       runId: string;
       toolCallId: string;
-      name: ClientToolName;
+      name: string;
+      executor: ToolExecutor;
       arguments: Record<string, unknown>;
       title: string;
       description: string;
+      confirmLabel: ConfirmLabel;
       requiresApproval: true;
     }
   | {

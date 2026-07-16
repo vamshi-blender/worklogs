@@ -22,6 +22,12 @@
   max-height: 200px;
   overflow-y: auto;
   box-sizing: border-box;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge */
+}
+
+.composer-textarea::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
 }
 
 .composer-textarea::placeholder {
@@ -102,6 +108,20 @@
 .composer-tooltip:hover::after,
 .composer-tooltip:focus-visible::after {
   transform: translate(-50%, 0);
+}
+
+/* The send/stop button sits at the viewport's right edge; anchor its label
+   to the button's right side so wide text (e.g. "Stop response") grows
+   leftward instead of past the window edge. */
+.composer-send-btn.composer-tooltip::after {
+  left: auto;
+  right: 0;
+  transform: translate(0, 4px);
+}
+
+.composer-send-btn.composer-tooltip:hover::after,
+.composer-send-btn.composer-tooltip:focus-visible::after {
+  transform: translate(0, 0);
 }
 
 .composer-icon-btn {

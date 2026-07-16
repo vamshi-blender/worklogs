@@ -203,13 +203,21 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         conversationId: event.conversationId,
       }));
     } else if (event.type === "response.delta") {
-      updateAssistant(chatId, messageId, (message) => ({
-        ...message,
-        content: message.content + event.delta,
-        status: "streaming",
-        error: undefined,
-      }));
-    } else if (event.type === "client_tool.request") {
+      updateAssistant(chatId, messageId, (message) => {
+        const trailingNewlines = message.content.match(/\n+$/)?.[0].length ?? 0;
+        const segmentBreak =
+          event.startsNewSegment && message.content.length > 0
+            ? "\n".repeat(Math.max(0, 2 - trailingNewlines))
+            : "";
+
+        return {
+          ...message,
+          content: message.content + segmentBreak + event.delta,
+          status: "streaming",
+          error: undefined,
+        };
+      });
+    } else if (event.type === "tool_approval.request") {
       updateAssistant(chatId, messageId, (message) => ({
         ...message,
         status: "approval",
@@ -400,14 +408,18 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
     let result: unknown;
     let error: string | undefined;
     if (approved) {
-      try {
-        result = await executeClientTool(toolRequest);
-      } catch (toolError) {
-        approved = false;
-        error = toolError instanceof Error ? toolError.message : "The page could not be read.";
+      // Server-executed tools run inside the backend once approved; only
+      // client tools produce a result in the browser.
+      if (toolRequest.executor === "client") {
+        try {
+          result = await executeClientTool(toolRequest);
+        } catch (toolError) {
+          approved = false;
+          error = toolError instanceof Error ? toolError.message : "The page could not be read.";
+        }
       }
     } else {
-      error = "The user declined page access.";
+      error = "The user declined this request.";
     }
 
     void executeRequest(chatId, messageId, (signal, onEvent) =>
@@ -417,6 +429,60 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         approved,
         result,
         error,
+        signal,
+        onEvent,
+      }),
+    );
+  }
+
+  function handleToolInstruction(messageId: string, instruction: string) {
+    if (busyRef.current) return;
+    const chatId = activeChat?.id;
+    if (!chatId) return;
+    const message = messages.find((candidate) => candidate.id === messageId);
+    const toolRequest = message?.toolRequest;
+    if (!toolRequest) return;
+
+    const userMessage: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: instruction,
+    };
+    const replyId = crypto.randomUUID();
+    const assistantMessage: ChatMessage = {
+      id: replyId,
+      role: "assistant",
+      content: "",
+      status: "pending",
+    };
+
+    // Show the instruction as a normal user turn, then stream the resumed
+    // run into a fresh assistant bubble below it. The paused approval bubble
+    // is closed out — or dropped entirely if the model had no text yet.
+    updateChat(chatId, (chat) => ({
+      ...chat,
+      updatedAt: Date.now(),
+      messages: [
+        ...chat.messages
+          .filter(
+            (candidate) => !(candidate.id === messageId && !candidate.content.trim()),
+          )
+          .map((candidate) =>
+            candidate.id === messageId
+              ? { ...candidate, status: "done" as const, toolRequest: undefined }
+              : candidate,
+          ),
+        userMessage,
+        assistantMessage,
+      ],
+    }));
+
+    void executeRequest(chatId, replyId, (signal, onEvent) =>
+      resumeChat({
+        runId: toolRequest.runId,
+        toolCallId: toolRequest.toolCallId,
+        approved: false,
+        instruction,
         signal,
         onEvent,
       }),
@@ -503,6 +569,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
               messages={messages}
               onApproveTool={(messageId) => void handleToolDecision(messageId, true)}
               onRejectTool={(messageId) => void handleToolDecision(messageId, false)}
+              onInstructTool={handleToolInstruction}
               onRetry={handleRetry}
             />
             {/* Keep the last message actions comfortably clear of the floating composer. */}
