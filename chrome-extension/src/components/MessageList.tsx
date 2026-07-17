@@ -1,6 +1,13 @@
 import { Children, isValidElement, useEffect, useId, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Copy01Icon, Tick01Icon, Upload01Icon } from "@hugeicons/core-free-icons";
+import {
+  AlertDiamondIcon,
+  CableIcon,
+  ChevronDownIcon,
+  Copy01Icon,
+  Tick01Icon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
@@ -11,6 +18,41 @@ import type { ToolApprovalRequest } from "../api/protocol";
 import "katex/dist/katex.min.css";
 import "./MessageList.css";
 
+export type AgentToolStatus =
+  | "running"
+  | "awaiting_approval"
+  | "completed"
+  | "rejected"
+  | "failed";
+
+export interface CommentaryWorkItem {
+  id: string;
+  type: "commentary";
+  content: string;
+}
+
+export interface ToolWorkItem {
+  id: string;
+  type: "tool";
+  callId: string;
+  name: string;
+  executor: "client" | "server";
+  arguments: Record<string, unknown>;
+  status: AgentToolStatus;
+  output?: string;
+  startedAt: number;
+  completedAt?: number;
+}
+
+export type AgentWorkItem = CommentaryWorkItem | ToolWorkItem;
+
+export interface AgentWorkLog {
+  startedAt: number;
+  pausedAt?: number;
+  completedAt?: number;
+  items: AgentWorkItem[];
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -18,6 +60,7 @@ export interface ChatMessage {
   status?: "pending" | "streaming" | "approval" | "done" | "error";
   error?: string;
   toolRequest?: ToolApprovalRequest;
+  work?: AgentWorkLog;
 }
 
 interface MessageListProps {
@@ -413,6 +456,8 @@ function MermaidDiagram({ source }: { source: string }) {
 
   useEffect(() => {
     let cancelled = false;
+    // Reset the derived render result when the diagram source or theme changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSvg(null);
     setHasError(false);
 
@@ -572,6 +617,159 @@ function MarkdownMessage({ content, renderMermaid = true }: MarkdownMessageProps
   );
 }
 
+function formatElapsed(milliseconds: number): string {
+  const seconds = Math.max(1, Math.round(milliseconds / 1000));
+  if (seconds < 60) return `${seconds} sec`;
+
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder ? `${minutes} min ${remainder} sec` : `${minutes} min`;
+}
+
+function humanizeToolName(name: string): string {
+  return name
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function prettyToolData(value: string): string {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function isToolFailure(status: AgentToolStatus): boolean {
+  return status === "failed" || status === "rejected";
+}
+
+function ToolLineContent({ item }: { item: ToolWorkItem }) {
+  const failed = isToolFailure(item.status);
+  return (
+    <>
+      <HugeiconsIcon
+        icon={failed ? AlertDiamondIcon : CableIcon}
+        size={16}
+        className={`agent-work-tool-icon${failed ? " agent-work-tool-icon--failed" : ""}`}
+      />
+      <span
+        className={`agent-work-tool-name${
+          item.status === "running" ? " agent-work-shimmer" : ""
+        }`}
+      >
+        {humanizeToolName(item.name)}
+      </span>
+    </>
+  );
+}
+
+function AgentWorkLogView({
+  work,
+  status,
+  hasFinalAnswer,
+}: {
+  work: AgentWorkLog;
+  status: ChatMessage["status"];
+  hasFinalAnswer: boolean;
+}) {
+  const unsettled = !work.completedAt && status !== "done" && status !== "error";
+  const ticking = unsettled && !work.pausedAt;
+  // While the agent is still working (no final answer yet) the section is
+  // locked open; it auto-collapses the moment the final answer starts.
+  const working = unsettled && !hasFinalAnswer;
+  const [expanded, setExpanded] = useState(working);
+  const wasWorking = useRef(working);
+  const [now, setNow] = useState(work.startedAt);
+
+  useEffect(() => {
+    if (wasWorking.current && !working) setExpanded(false);
+    wasWorking.current = working;
+  }, [working]);
+
+  useEffect(() => {
+    if (!ticking) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [ticking]);
+
+  if (work.items.length === 0) return null;
+
+  const elapsed = (work.completedAt ?? work.pausedAt ?? now) - work.startedAt;
+  const summary = unsettled
+    ? status === "approval"
+      ? `Waiting for approval · ${formatElapsed(elapsed)}`
+      : `Working for ${formatElapsed(elapsed)}`
+    : `Worked for ${formatElapsed(elapsed)}`;
+
+  return (
+    <section className={`agent-work${unsettled ? " agent-work--active" : ""}`}>
+      <button
+        type="button"
+        className={`agent-work-toggle${working ? " agent-work-toggle--locked" : ""}`}
+        aria-expanded={expanded}
+        onClick={() => {
+          if (!working) setExpanded((current) => !current);
+        }}
+      >
+        <span className={`agent-work-label${working ? " agent-work-shimmer" : ""}`}>
+          {summary}
+        </span>
+        {!working && (
+          <HugeiconsIcon
+            icon={ChevronDownIcon}
+            size={15}
+            className={`agent-work-chevron${expanded ? " agent-work-chevron--open" : ""}`}
+          />
+        )}
+      </button>
+
+      <div
+        className={`agent-work-collapse${expanded ? " agent-work-collapse--open" : ""}`}
+        inert={!expanded}
+      >
+        <div className="agent-work-items" aria-live={unsettled ? "polite" : "off"}>
+          {work.items.map((item) =>
+            item.type === "commentary" ? (
+              <div key={item.id} className="agent-work-item agent-work-commentary">
+                <div className="agent-work-commentary-text">
+                  <MarkdownMessage content={item.content} renderMermaid={false} />
+                </div>
+              </div>
+            ) : Object.keys(item.arguments).length > 0 || item.output ? (
+              <details key={item.id} className="agent-work-item agent-work-tool">
+                <summary className="agent-work-tool-line">
+                  <ToolLineContent item={item} />
+                </summary>
+                <div className="agent-work-tool-details">
+                  {Object.keys(item.arguments).length > 0 && (
+                    <div>
+                      <span>Arguments</span>
+                      <pre>{JSON.stringify(item.arguments, null, 2)}</pre>
+                    </div>
+                  )}
+                  {item.output && (
+                    <div>
+                      <span>Result</span>
+                      <pre>{prettyToolData(item.output)}</pre>
+                    </div>
+                  )}
+                </div>
+              </details>
+            ) : (
+              <div key={item.id} className="agent-work-item agent-work-tool">
+                <div className="agent-work-tool-line agent-work-tool-line--static">
+                  <ToolLineContent item={item} />
+                </div>
+              </div>
+            ),
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function MessageList({
   messages,
   onApproveTool,
@@ -605,16 +803,26 @@ export default function MessageList({
 
   return (
     <div className="message-list">
-      {messages.map((message) => (
-        <div key={message.id} className={`message-row message-row--${message.role}`}>
+      {messages.map((message) => {
+        const hasWork = Boolean(message.work?.items.length);
+
+        return (
+          <div key={message.id} className={`message-row message-row--${message.role}`}>
           {message.role === "user" ? (
             <div className="message-bubble message-bubble--user">
               <MarkdownMessage content={message.content} />
             </div>
-          ) : message.status === "pending" && !message.content ? (
+          ) : message.status === "pending" && !message.content && !hasWork ? (
             <span className="message-pending-dot" aria-label="Waiting for response" />
           ) : (
             <div className="message-column">
+              {message.work && hasWork && (
+                <AgentWorkLogView
+                  work={message.work}
+                  status={message.status}
+                  hasFinalAnswer={Boolean(message.content)}
+                />
+              )}
               {message.content && (
                 <div
                   className={`message-bubble message-bubble--assistant${
@@ -695,7 +903,7 @@ export default function MessageList({
                   </button>
                 </div>
               )}
-              {message.status === "done" && (
+              {message.status === "done" && message.content && (
                 <div className="message-actions">
                   <button
                     type="button"
@@ -712,8 +920,9 @@ export default function MessageList({
               )}
             </div>
           )}
-        </div>
-      ))}
+          </div>
+        );
+      })}
     </div>
   );
 }

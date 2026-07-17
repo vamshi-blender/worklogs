@@ -1,7 +1,10 @@
 import {
   RunContext,
   RunState,
+  isOpenAIResponsesRawModelStreamEvent,
   run,
+  type RunToolCallItem,
+  type RunToolCallOutputItem,
   type RunToolApprovalItem,
 } from "@openai/agents";
 import { donnaAgent, type DonnaRunContext } from "./donna";
@@ -9,6 +12,7 @@ import { savePendingRun } from "./pending-runs";
 import {
   CONFIRM_LABELS,
   encodeEvent,
+  type AssistantPhase,
   type ChatStreamEvent,
   type ClientToolName,
   type ConfirmLabel,
@@ -19,10 +23,97 @@ const CLIENT_TOOL_NAMES = new Set<ClientToolName>([
   "get_current_page_context",
 ]);
 
+const PRIVATE_TOOL_ARGUMENTS = new Set([
+  "approvalTitle",
+  "approvalDescription",
+  "confirmLabel",
+]);
+const TOOL_ARGUMENT_STRING_LIMIT = 800;
+const TOOL_OUTPUT_PREVIEW_LIMIT = 1_200;
+
 interface StreamDonnaRunOptions {
   input: string | RunState<DonnaRunContext, typeof donnaAgent>;
   conversationId: string;
   signal: AbortSignal;
+}
+
+interface TextSegment {
+  itemId: string;
+  phase: AssistantPhase;
+}
+
+function toolExecutor(name: string): ToolExecutor {
+  return CLIENT_TOOL_NAMES.has(name as ClientToolName) ? "client" : "server";
+}
+
+function parseArguments(argumentsJson: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(argumentsJson);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function publicToolArguments(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(args)
+      .filter(([key]) => !PRIVATE_TOOL_ARGUMENTS.has(key))
+      .map(([key, value]) => [
+        key,
+        typeof value === "string" && value.length > TOOL_ARGUMENT_STRING_LIMIT
+          ? `${value.slice(0, TOOL_ARGUMENT_STRING_LIMIT)}…`
+          : value,
+      ]),
+  );
+}
+
+function toolCallPresentation(item: RunToolCallItem): {
+  callId: string;
+  name: string;
+  executor: ToolExecutor;
+  arguments: Record<string, unknown>;
+} | null {
+  const callId = item.callId;
+  const name = item.toolName;
+  if (!callId || !name) return null;
+
+  const args =
+    item.rawItem.type === "function_call"
+      ? parseArguments(item.rawItem.arguments)
+      : {};
+
+  return {
+    callId,
+    name,
+    executor: toolExecutor(name),
+    arguments: publicToolArguments(args),
+  };
+}
+
+function toolOutputPreview(item: RunToolCallOutputItem): string | undefined {
+  let output: string;
+  try {
+    output =
+      typeof item.output === "string"
+        ? item.output
+        : JSON.stringify(item.output);
+  } catch {
+    return undefined;
+  }
+
+  if (!output) return undefined;
+  return output.length > TOOL_OUTPUT_PREVIEW_LIMIT
+    ? `${output.slice(0, TOOL_OUTPUT_PREVIEW_LIMIT)}…`
+    : output;
+}
+
+function assistantPhase(value: unknown): AssistantPhase {
+  return value === "commentary" ? "commentary" : "final_answer";
 }
 
 function asToolApprovalInterruption(
@@ -54,9 +145,7 @@ function asToolApprovalInterruption(
   return {
     toolCallId: rawItem.callId,
     name: rawItem.name,
-    executor: CLIENT_TOOL_NAMES.has(rawItem.name as ClientToolName)
-      ? "client"
-      : "server",
+    executor: toolExecutor(rawItem.name),
     arguments: parsedArguments as Record<string, unknown>,
   };
 }
@@ -133,8 +222,37 @@ export function streamDonnaRun({
         });
 
         let startsNewSegment = true;
+        let fallbackSegmentNumber = 0;
+        let currentSegment: TextSegment = {
+          itemId: `assistant-${fallbackSegmentNumber}`,
+          phase: "final_answer",
+        };
+        const segmentsByOutputIndex = new Map<number, TextSegment>();
 
         for await (const event of result) {
+          if (isOpenAIResponsesRawModelStreamEvent(event)) {
+            const modelEvent = event.data.event;
+
+            if (modelEvent.type === "response.created") {
+              segmentsByOutputIndex.clear();
+            } else if (
+              modelEvent.type === "response.output_item.added" &&
+              modelEvent.item.type === "message"
+            ) {
+              const segment: TextSegment = {
+                itemId:
+                  modelEvent.item.id ||
+                  `assistant-${++fallbackSegmentNumber}`,
+                phase: assistantPhase(modelEvent.item.phase),
+              };
+              segmentsByOutputIndex.set(modelEvent.output_index, segment);
+              currentSegment = segment;
+              startsNewSegment = true;
+            }
+
+            continue;
+          }
+
           if (
             event.type === "run_item_stream_event" &&
             event.name === "message_output_created"
@@ -144,14 +262,56 @@ export function streamDonnaRun({
           }
 
           if (
+            event.type === "run_item_stream_event" &&
+            event.name === "tool_called" &&
+            event.item.type === "tool_call_item"
+          ) {
+            const toolCall = toolCallPresentation(event.item);
+            if (toolCall) {
+              send({
+                type: "tool.started",
+                ...toolCall,
+                startedAt: Date.now(),
+              });
+            }
+            continue;
+          }
+
+          if (
+            event.type === "run_item_stream_event" &&
+            event.name === "tool_output" &&
+            event.item.type === "tool_call_output_item"
+          ) {
+            const callId = event.item.callId;
+            if (callId) {
+              const output = toolOutputPreview(event.item);
+              send({
+                type: "tool.completed",
+                callId,
+                ...(output ? { output } : {}),
+                completedAt: Date.now(),
+              });
+            }
+            continue;
+          }
+
+          if (
             event.type === "raw_model_stream_event" &&
             event.data.type === "output_text_delta"
           ) {
             if (!event.data.delta) continue;
 
+            const outputIndex = event.data.providerData?.output_index;
+            const segment =
+              typeof outputIndex === "number"
+                ? segmentsByOutputIndex.get(outputIndex) ?? currentSegment
+                : currentSegment;
+
             send({
               type: "response.delta",
               delta: event.data.delta,
+              itemId: segment.itemId,
+              phase: segment.phase,
               ...(startsNewSegment ? { startsNewSegment: true } : {}),
             });
             startsNewSegment = false;
@@ -183,7 +343,7 @@ export function streamDonnaRun({
             ...approvalPresentation(approval.arguments),
             requiresApproval: true,
           });
-          send({ type: "response.paused", runId });
+          send({ type: "response.paused", runId, pausedAt: Date.now() });
           return;
         }
 

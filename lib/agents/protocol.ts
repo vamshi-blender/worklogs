@@ -2,6 +2,8 @@ export type ClientToolName = "get_current_page_context";
 
 export type ToolExecutor = "client" | "server";
 
+export type AssistantPhase = "commentary" | "final_answer";
+
 export const CONFIRM_LABELS = [
   "Allow",
   "Run",
@@ -22,7 +24,23 @@ export type ChatStreamEvent =
   | {
       type: "response.delta";
       delta: string;
+      itemId: string;
+      phase: AssistantPhase;
       startsNewSegment?: true;
+    }
+  | {
+      type: "tool.started";
+      callId: string;
+      name: string;
+      executor: ToolExecutor;
+      arguments: Record<string, unknown>;
+      startedAt: number;
+    }
+  | {
+      type: "tool.completed";
+      callId: string;
+      output?: string;
+      completedAt: number;
     }
   | {
       type: "tool_approval.request";
@@ -39,6 +57,7 @@ export type ChatStreamEvent =
   | {
       type: "response.paused";
       runId: string;
+      pausedAt: number;
     }
   | {
       type: "response.completed";

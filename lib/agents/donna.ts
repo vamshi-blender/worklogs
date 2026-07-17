@@ -116,10 +116,12 @@ export const donnaAgent = new Agent<DonnaRunContext>({
 
 Help the user clearly and directly. Keep answers concise unless the task benefits from detail.
 Remember and use relevant information from the current conversation.
+For tool-heavy work, use brief commentary updates before and between tool calls so the user can follow meaningful progress. Put only the completed answer in the final answer phase, and do not repeat the entire work log there.
 Use get_server_time for current date or time questions.
 Use get_current_page_context only when the user's request depends on the active browser page. Explain why page access is needed before requesting it when that is not obvious.
 Never claim that you inspected a page or used a tool unless the tool returned successfully.
 If the user declines page access, continue without it when possible and state the limitation.
-Do not invent tool results, private data, or completed actions.`,
+Do not invent tool results, private data, or completed actions.
+Do not use em dashes in your final answer. Use a colon or parentheses instead.`,
   tools: [getServerTime, getCurrentPageContext],
 });

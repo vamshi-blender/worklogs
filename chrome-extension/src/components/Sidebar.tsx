@@ -37,6 +37,7 @@ interface SidebarProps {
   activeChatId: string | null;
   busy: boolean;
   onClose: () => void;
+  onSearchChats: (query: string) => string[];
   onNewChat: () => void;
   onSelectChat: (chatId: string) => void;
   onRenameChat: (chatId: string, title: string) => void;
@@ -50,6 +51,7 @@ export default function Sidebar({
   activeChatId,
   busy,
   onClose,
+  onSearchChats,
   onNewChat,
   onSelectChat,
   onRenameChat,
@@ -64,10 +66,14 @@ export default function Sidebar({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteErrorFor, setDeleteErrorFor] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme | null>(null);
+  const [searchValue, setSearchValue] = useState("");
+  // null = no search ran yet (empty query); otherwise ranked chat ids.
+  const [searchResultIds, setSearchResultIds] = useState<string[] | null>(null);
   const [backendUrl, setBackendUrl] = useState("");
   const [backendDraft, setBackendDraft] = useState("");
   const [backendHint, setBackendHint] = useState("");
   const menuAnchorRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const renameCancelledRef = useRef(false);
 
   useEffect(() => {
@@ -107,9 +113,29 @@ export default function Sidebar({
     setVisible(false);
     setMenuOpenFor(null);
     setRenamingId(null);
+    setSearchValue("");
+    setSearchResultIds(null);
     const timeout = setTimeout(() => setMounted(false), TRANSITION_MS);
     return () => clearTimeout(timeout);
   }, [open]);
+
+  // Debounced search-as-you-type.
+  useEffect(() => {
+    const query = searchValue.trim();
+    if (!query) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSearchResultIds(null);
+      return;
+    }
+
+    const timeout = setTimeout(() => setSearchResultIds(onSearchChats(query)), 250);
+    return () => clearTimeout(timeout);
+  }, [searchValue, onSearchChats]);
+
+  function clearSearch() {
+    setSearchValue("");
+    setSearchResultIds(null);
+  }
 
   useEffect(() => {
     if (!open || !mounted) return;
@@ -124,6 +150,50 @@ export default function Sidebar({
       cancelAnimationFrame(enterFrame);
     };
   }, [mounted, open]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handleGlobalKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.defaultPrevented) return;
+      const target = event.target;
+      const isEditable =
+        target instanceof HTMLElement &&
+        target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]');
+
+      if (event.key === "Escape") {
+        if (!isEditable) {
+          event.preventDefault();
+          onClose();
+        }
+        return;
+      }
+
+      if (
+        event.isComposing ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey ||
+        Array.from(event.key).length !== 1 ||
+        isEditable
+      ) {
+        return;
+      }
+
+      const input = searchInputRef.current;
+      if (!input || input.disabled) return;
+
+      event.preventDefault();
+      const selectionStart = input.selectionStart ?? input.value.length;
+      const selectionEnd = input.selectionEnd ?? input.value.length;
+      input.setRangeText(event.key, selectionStart, selectionEnd, "end");
+      setSearchValue(input.value);
+      input.focus();
+    }
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [onClose, open]);
 
   useEffect(() => {
     if (!menuOpenFor) return;
@@ -312,6 +382,10 @@ export default function Sidebar({
 
   const pinnedChats = chats.filter((chat) => chat.pinned);
   const recentChats = chats.filter((chat) => !chat.pinned);
+  const searching = searchValue.trim().length > 0;
+  const searchResults = (searchResultIds ?? [])
+    .map((id) => chats.find((chat) => chat.id === id))
+    .filter((chat): chat is SidebarChat => chat !== undefined);
 
   return (
     <>
@@ -356,20 +430,50 @@ export default function Sidebar({
             <HugeiconsIcon icon={PencilEdit02Icon} size={18} />
             <span>New chat</span>
           </button>
-          <button
-            type="button"
-            className="sidebar-nav-row"
-            disabled
-            title="Search will be available later"
-          >
+          <div className="sidebar-search-row">
             <HugeiconsIcon icon={Search01Icon} size={18} />
-            <span>Search</span>
-            <span className="sidebar-coming-soon">Later</span>
-          </button>
+            <input
+              ref={searchInputRef}
+              className="sidebar-search-input"
+              value={searchValue}
+              placeholder="Search"
+              aria-label="Search chats"
+              spellCheck={false}
+              onChange={(event) => setSearchValue(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  clearSearch();
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+            {searchValue.length > 0 && (
+              <button
+                type="button"
+                className="sidebar-search-clear"
+                aria-label="Clear search"
+                onClick={clearSearch}
+              >
+                <HugeiconsIcon icon={Cancel01Icon} size={14} />
+              </button>
+            )}
+          </div>
         </nav>
 
         <div className="sidebar-history">
-          {chats.length === 0 ? (
+          {searching ? (
+            <section className="sidebar-history-section" aria-labelledby="results-heading">
+              <h2 className="sidebar-section-heading" id="results-heading">
+                Results
+              </h2>
+              {searchResultIds === null ? null : searchResults.length > 0 ? (
+                renderChatList(searchResults)
+              ) : (
+                <p className="sidebar-empty-state">No chats match your search.</p>
+              )}
+            </section>
+          ) : chats.length === 0 ? (
             <>
               <h2 className="sidebar-section-heading">Recents</h2>
               <p className="sidebar-empty-state">Your conversations will appear here.</p>

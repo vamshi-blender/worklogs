@@ -13,10 +13,22 @@ interface ComposerProps {
   onSend?: (message: string) => void;
   busy?: boolean;
   disabled?: boolean;
+  captureGlobalTyping?: boolean;
   onCancel?: () => void;
 }
 
-export default function Composer({ onSend, busy = false, disabled = false, onCancel }: ComposerProps) {
+function resizeTextarea(element: HTMLTextAreaElement) {
+  element.style.height = "auto";
+  element.style.height = `${Math.min(element.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
+}
+
+export default function Composer({
+  onSend,
+  busy = false,
+  disabled = false,
+  captureGlobalTyping = true,
+  onCancel,
+}: ComposerProps) {
   const [value, setValue] = useState("");
   const [dictationStatus, setDictationStatus] = useState<DictationStatus>("idle");
   const [dictationError, setDictationError] = useState<string | null>(null);
@@ -41,14 +53,49 @@ export default function Composer({ onSend, busy = false, disabled = false, onCan
     };
   }, []);
 
-  function resize(el: HTMLTextAreaElement) {
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
-  }
+  useEffect(() => {
+    if (!captureGlobalTyping) return;
+
+    function handleGlobalTyping(event: globalThis.KeyboardEvent) {
+      if (
+        disabled ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey ||
+        Array.from(event.key).length !== 1
+      ) {
+        return;
+      }
+
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest('input, textarea, select, [contenteditable="true"], [role="textbox"]')
+      ) {
+        return;
+      }
+
+      const textarea = textareaRef.current;
+      if (!textarea || textarea.disabled) return;
+
+      event.preventDefault();
+      const selectionStart = textarea.selectionStart ?? textarea.value.length;
+      const selectionEnd = textarea.selectionEnd ?? textarea.value.length;
+      textarea.setRangeText(event.key, selectionStart, selectionEnd, "end");
+      setValue(textarea.value);
+      resizeTextarea(textarea);
+      textarea.focus();
+    }
+
+    window.addEventListener("keydown", handleGlobalTyping);
+    return () => window.removeEventListener("keydown", handleGlobalTyping);
+  }, [captureGlobalTyping, disabled]);
 
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setValue(e.target.value);
-    resize(e.target);
+    resizeTextarea(e.target);
   }
 
   function handleSend() {
@@ -89,7 +136,7 @@ export default function Composer({ onSend, busy = false, disabled = false, onCan
       setValue((current) => `${current}${current && !/\s$/.test(current) ? " " : ""}${transcript}`);
       requestAnimationFrame(() => {
         if (textareaRef.current) {
-          resize(textareaRef.current);
+          resizeTextarea(textareaRef.current);
           textareaRef.current.focus();
         }
       });

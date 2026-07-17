@@ -46,7 +46,207 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  width: 100%;
   max-width: 100%;
+}
+
+.agent-work {
+  width: 100%;
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base-size);
+  line-height: var(--text-base-line);
+}
+
+.agent-work-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.agent-work-toggle:hover {
+  color: var(--text-primary);
+}
+
+.agent-work-toggle--locked {
+  cursor: default;
+}
+
+.agent-work-toggle--locked:hover {
+  color: var(--text-secondary);
+}
+
+.agent-work-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--text-primary) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: var(--radius-row);
+}
+
+.agent-work-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--text-tertiary) 35%,
+    var(--text-primary) 50%,
+    var(--text-tertiary) 65%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: agent-work-shimmer 2200ms linear infinite;
+}
+
+@keyframes agent-work-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Chevron points right when collapsed, down when expanded — like ChatGPT. */
+.agent-work-chevron {
+  transform: rotate(-90deg);
+  transition: transform var(--transition-fast);
+}
+
+.agent-work-chevron--open {
+  transform: rotate(0deg);
+}
+
+/* Grid-rows trick: the content stays mounted (streaming keeps appending into
+   it) while the section expands/collapses smoothly. */
+.agent-work-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 280ms ease;
+}
+
+.agent-work-collapse--open {
+  grid-template-rows: 1fr;
+}
+
+.agent-work-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agent-work-collapse--open .agent-work-items {
+  padding: var(--space-2) 0 var(--space-1);
+}
+
+.agent-work-item {
+  position: relative;
+  min-width: 0;
+}
+
+/* Tool call rendered as a single muted line — icon + tool name — matching
+   ChatGPT's activity rows. Clicking the line reveals arguments/result. */
+.agent-work-tool-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: fit-content;
+  color: var(--text-secondary);
+  list-style: none;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.agent-work-tool-line::-webkit-details-marker {
+  display: none;
+}
+
+.agent-work-tool-line:hover {
+  color: var(--text-primary);
+}
+
+.agent-work-tool-line--static {
+  cursor: default;
+}
+
+.agent-work-tool-line--static:hover {
+  color: var(--text-secondary);
+}
+
+.agent-work-tool-icon {
+  flex: none;
+}
+
+.agent-work-tool-icon--failed {
+  color: var(--status-danger);
+}
+
+.agent-work-commentary-text {
+  color: var(--text-primary);
+  font-size: var(--text-base-size);
+  line-height: var(--text-base-line);
+}
+
+.agent-work-commentary-text .message-markdown p,
+.agent-work-commentary-text .message-markdown ul,
+.agent-work-commentary-text .message-markdown ol,
+.agent-work-commentary-text .message-markdown blockquote,
+.agent-work-commentary-text .message-markdown pre {
+  margin-bottom: var(--space-2);
+}
+
+.agent-work-tool-details {
+  margin: var(--space-2) 0 0 calc(16px + var(--space-2));
+}
+
+.agent-work-tool-details > div {
+  margin-top: var(--space-2);
+}
+
+.agent-work-tool-details > div > span {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-work-tool-details pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-canvas) 70%, transparent);
+  color: var(--text-secondary);
+  padding: var(--space-2);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-work-shimmer {
+    animation: none;
+    background: none;
+    color: var(--text-secondary);
+  }
+
+  .agent-work-collapse,
+  .agent-work-chevron {
+    animation: none;
+    transition: none;
+  }
 }
 
 .message-markdown > :first-child {

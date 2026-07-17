@@ -1,4 +1,9 @@
-import type { ChatMessage } from "../components/MessageList";
+import type {
+  AgentToolStatus,
+  AgentWorkItem,
+  AgentWorkLog,
+  ChatMessage,
+} from "../components/MessageList";
 
 const CHAT_STORE_KEY = "donnaChatStoreV2";
 const LEGACY_CURRENT_CHAT_KEY = "donnaCurrentChat";
@@ -35,6 +40,77 @@ export function createChatTitle(content: string): string {
   return `${normalized.slice(0, MAX_TITLE_LENGTH - 1).trimEnd()}…`;
 }
 
+const TOOL_STATUSES = new Set<AgentToolStatus>([
+  "running",
+  "awaiting_approval",
+  "completed",
+  "rejected",
+  "failed",
+]);
+
+function restoreWorkItem(value: unknown): AgentWorkItem | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Partial<AgentWorkItem>;
+
+  if (
+    item.type === "commentary" &&
+    typeof item.id === "string" &&
+    typeof item.content === "string"
+  ) {
+    return { id: item.id, type: "commentary", content: item.content };
+  }
+
+  if (
+    item.type !== "tool" ||
+    typeof item.id !== "string" ||
+    typeof item.callId !== "string" ||
+    typeof item.name !== "string" ||
+    (item.executor !== "client" && item.executor !== "server") ||
+    !item.arguments ||
+    typeof item.arguments !== "object" ||
+    Array.isArray(item.arguments) ||
+    !item.status ||
+    !TOOL_STATUSES.has(item.status) ||
+    typeof item.startedAt !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    id: item.id,
+    type: "tool",
+    callId: item.callId,
+    name: item.name,
+    executor: item.executor,
+    arguments: item.arguments,
+    status: item.status,
+    ...(typeof item.output === "string" ? { output: item.output } : {}),
+    startedAt: item.startedAt,
+    ...(typeof item.completedAt === "number"
+      ? { completedAt: item.completedAt }
+      : {}),
+  };
+}
+
+function restoreWorkLog(value: unknown): AgentWorkLog | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const work = value as Partial<AgentWorkLog>;
+  if (typeof work.startedAt !== "number" || !Array.isArray(work.items)) {
+    return undefined;
+  }
+
+  return {
+    startedAt: work.startedAt,
+    ...(typeof work.pausedAt === "number" ? { pausedAt: work.pausedAt } : {}),
+    ...(typeof work.completedAt === "number"
+      ? { completedAt: work.completedAt }
+      : {}),
+    items: work.items
+      .map(restoreWorkItem)
+      .filter((item): item is AgentWorkItem => item !== null),
+  };
+}
+
 function restoreMessage(value: unknown): ChatMessage | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const message = value as Partial<ChatMessage>;
@@ -46,22 +122,37 @@ function restoreMessage(value: unknown): ChatMessage | null {
     return null;
   }
 
+  const work = restoreWorkLog(message.work);
+
   if (
     message.role === "assistant" &&
     (message.status === "pending" ||
       message.status === "streaming" ||
       message.status === "approval")
   ) {
+    const interruptedAt = Date.now();
     return {
       id: message.id,
       role: "assistant",
       content: message.content,
       status: "error",
       error: "This response was interrupted. Try sending the message again.",
+      work: work
+        ? {
+            ...work,
+            completedAt: work.completedAt ?? interruptedAt,
+            items: work.items.map((item) =>
+              item.type === "tool" &&
+              (item.status === "running" || item.status === "awaiting_approval")
+                ? { ...item, status: "failed", completedAt: interruptedAt }
+                : item,
+            ),
+          }
+        : undefined,
     };
   }
 
-  return message as ChatMessage;
+  return { ...(message as ChatMessage), work };
 }
 
 function restoreChat(value: unknown): StoredChat | null {

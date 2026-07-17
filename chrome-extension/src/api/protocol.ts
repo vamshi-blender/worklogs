@@ -2,6 +2,8 @@ export type ClientToolName = "get_current_page_context";
 
 export type ToolExecutor = "client" | "server";
 
+export type AssistantPhase = "commentary" | "final_answer";
+
 export interface ToolApprovalRequest {
   runId: string;
   toolCallId: string;
@@ -16,9 +18,29 @@ export interface ToolApprovalRequest {
 
 export type ChatStreamEvent =
   | { type: "response.started"; requestId: string; conversationId: string }
-  | { type: "response.delta"; delta: string; startsNewSegment?: true }
+  | {
+      type: "response.delta";
+      delta: string;
+      itemId: string;
+      phase: AssistantPhase;
+      startsNewSegment?: true;
+    }
+  | {
+      type: "tool.started";
+      callId: string;
+      name: string;
+      executor: ToolExecutor;
+      arguments: Record<string, unknown>;
+      startedAt: number;
+    }
+  | {
+      type: "tool.completed";
+      callId: string;
+      output?: string;
+      completedAt: number;
+    }
   | ({ type: "tool_approval.request" } & ToolApprovalRequest)
-  | { type: "response.paused"; runId: string }
+  | { type: "response.paused"; runId: string; pausedAt: number }
   | {
       type: "response.completed";
       conversationId: string;
@@ -32,6 +54,8 @@ export type ChatStreamEvent =
 const EVENT_TYPES = new Set([
   "response.started",
   "response.delta",
+  "tool.started",
+  "tool.completed",
   "tool_approval.request",
   "response.paused",
   "response.completed",

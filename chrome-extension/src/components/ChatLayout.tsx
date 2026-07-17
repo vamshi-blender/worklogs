@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   MenuTwoLineIcon,
@@ -10,13 +10,18 @@ import { getSavedMode, switchMode, type DisplayMode } from "../mode";
 import Sidebar, { type SidebarChat } from "./Sidebar";
 import Composer from "./Composer";
 import Greeting from "./Greeting";
-import MessageList, { type ChatMessage } from "./MessageList";
+import MessageList, {
+  type AgentWorkLog,
+  type ChatMessage,
+  type ToolWorkItem,
+} from "./MessageList";
 import {
   deleteConversation,
   generateConversationTitle,
   resumeChat,
   streamChat,
 } from "../api/chat";
+import { createChatSearcher } from "../api/chatSearch";
 import { executeClientTool } from "../api/clientTools";
 import type { ChatStreamEvent } from "../api/protocol";
 import {
@@ -32,6 +37,44 @@ import "./ChatLayout.css";
 // Placeholder until real user identity is wired up.
 const CURRENT_USER_NAME = "Vamshi";
 const EMPTY_MESSAGES: ChatMessage[] = [];
+
+function getWorkLog(message: ChatMessage, startedAt = Date.now()): AgentWorkLog {
+  return message.work ?? { startedAt, items: [] };
+}
+
+function setToolStatus(
+  message: ChatMessage,
+  callId: string,
+  status: ToolWorkItem["status"],
+  completedAt?: number,
+): ChatMessage {
+  if (!message.work) return message;
+  let found = false;
+  const items = message.work.items.map((item) => {
+    if (item.type !== "tool" || item.callId !== callId) return item;
+    found = true;
+    return {
+      ...item,
+      status,
+      ...(completedAt ? { completedAt } : {}),
+    };
+  });
+
+  return found ? { ...message, work: { ...message.work, items } } : message;
+}
+
+function resumeWorkClock(message: ChatMessage, resumedAt = Date.now()): ChatMessage {
+  if (!message.work?.pausedAt) return message;
+  const pausedDuration = Math.max(0, resumedAt - message.work.pausedAt);
+  return {
+    ...message,
+    work: {
+      ...message.work,
+      startedAt: message.work.startedAt + pausedDuration,
+      pausedAt: undefined,
+    },
+  };
+}
 
 interface ChatLayoutProps {
   ctx: DisplayMode;
@@ -68,6 +111,10 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       titlePending: titleStatus === "pending",
       pinned,
     }));
+  const searchChats = useMemo(
+    () => createChatSearcher(chatStore.chats),
+    [chatStore.chats],
+  );
 
   useEffect(() => {
     loadChatStore()
@@ -131,6 +178,24 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
 
   useEffect(() => {
     getSavedMode().then(setDisplayMode);
+  }, []);
+
+  useEffect(() => {
+    function handleNewChatShortcut(event: globalThis.KeyboardEvent) {
+      if (
+        event.ctrlKey &&
+        event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "o"
+      ) {
+        event.preventDefault();
+        activeRequestRef.current?.abort();
+        setChatStore((current) => ({ ...current, activeChatId: null }));
+      }
+    }
+
+    window.addEventListener("keydown", handleNewChatShortcut);
+    return () => window.removeEventListener("keydown", handleNewChatShortcut);
   }, []);
 
   async function handleToggleDisplayMode(next: DisplayMode) {
@@ -202,44 +267,182 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         ...chat,
         conversationId: event.conversationId,
       }));
+      updateAssistant(chatId, messageId, (message) => resumeWorkClock(message));
     } else if (event.type === "response.delta") {
       updateAssistant(chatId, messageId, (message) => {
+        if (event.phase === "commentary") {
+          const work = getWorkLog(message);
+          const existingIndex = work.items.findIndex(
+            (item) => item.type === "commentary" && item.id === event.itemId,
+          );
+          const items = [...work.items];
+
+          if (existingIndex === -1) {
+            items.push({
+              id: event.itemId,
+              type: "commentary",
+              content: event.delta,
+            });
+          } else {
+            const existing = items[existingIndex];
+            if (existing.type === "commentary") {
+              const trailingNewlines = existing.content.match(/\n+$/)?.[0].length ?? 0;
+              const segmentBreak =
+                event.startsNewSegment && existing.content.length > 0
+                  ? "\n".repeat(Math.max(0, 2 - trailingNewlines))
+                  : "";
+              items[existingIndex] = {
+                ...existing,
+                content: existing.content + segmentBreak + event.delta,
+              };
+            }
+          }
+
+          return {
+            ...message,
+            work: { ...work, items },
+            status: "streaming",
+            error: undefined,
+          };
+        }
+
         const trailingNewlines = message.content.match(/\n+$/)?.[0].length ?? 0;
         const segmentBreak =
           event.startsNewSegment && message.content.length > 0
             ? "\n".repeat(Math.max(0, 2 - trailingNewlines))
             : "";
+        const work = message.work?.items.length
+          ? {
+              ...message.work,
+              pausedAt: undefined,
+              completedAt: message.work.completedAt ?? Date.now(),
+            }
+          : message.work;
 
         return {
           ...message,
           content: message.content + segmentBreak + event.delta,
+          work,
           status: "streaming",
           error: undefined,
         };
       });
+    } else if (event.type === "tool.started") {
+      updateAssistant(chatId, messageId, (message) => {
+        const work = getWorkLog(message, event.startedAt);
+        const existingIndex = work.items.findIndex(
+          (item) => item.type === "tool" && item.callId === event.callId,
+        );
+        const tool: ToolWorkItem = {
+          id: `tool-${event.callId}`,
+          type: "tool",
+          callId: event.callId,
+          name: event.name,
+          executor: event.executor,
+          arguments: event.arguments,
+          status: "running",
+          startedAt: event.startedAt,
+        };
+        const items = [...work.items];
+        if (existingIndex === -1) items.push(tool);
+        else {
+          const existing = items[existingIndex];
+          items[existingIndex] =
+            existing.type === "tool"
+              ? { ...existing, ...tool, status: "running" }
+              : tool;
+        }
+
+        return {
+          ...message,
+          work: { ...work, pausedAt: undefined, completedAt: undefined, items },
+          status: "streaming",
+          error: undefined,
+        };
+      });
+    } else if (event.type === "tool.completed") {
+      updateAssistant(chatId, messageId, (message) => {
+        if (!message.work) return message;
+        const existingIndex = message.work.items.findIndex(
+          (item) => item.type === "tool" && item.callId === event.callId,
+        );
+        // Alternative-instruction resumes stream into a fresh bubble while
+        // the rejected tool remains in the previous bubble's work log.
+        if (existingIndex === -1) return message;
+
+        const items = [...message.work.items];
+        const existing = items[existingIndex];
+        if (existing.type === "tool") {
+          if (existing.status === "rejected" || existing.status === "failed") {
+            return message;
+          }
+          items[existingIndex] = {
+            ...existing,
+            status: "completed",
+            ...(event.output ? { output: event.output } : {}),
+            completedAt: event.completedAt,
+          };
+        }
+
+        return {
+          ...message,
+          work: { ...message.work, items },
+          status: "streaming",
+        };
+      });
     } else if (event.type === "tool_approval.request") {
       updateAssistant(chatId, messageId, (message) => ({
-        ...message,
+        ...setToolStatus(message, event.toolCallId, "awaiting_approval"),
         status: "approval",
         toolRequest: event,
+      }));
+    } else if (event.type === "response.paused") {
+      updateAssistant(chatId, messageId, (message) => ({
+        ...message,
+        work: message.work?.items.length
+          ? { ...message.work, pausedAt: event.pausedAt }
+          : message.work,
       }));
     } else if (event.type === "response.completed") {
       updateAssistant(chatId, messageId, (message) => ({
         ...message,
         status: "done",
         toolRequest: undefined,
+        work: message.work?.items.length
+          ? {
+              ...message.work,
+              pausedAt: undefined,
+              completedAt: message.work.completedAt ?? Date.now(),
+            }
+          : message.work,
       }));
       updateChat(chatId, (chat) => ({
         ...chat,
         conversationId: event.conversationId,
       }));
     } else if (event.type === "response.error") {
-      updateAssistant(chatId, messageId, (message) => ({
-        ...message,
-        status: "error",
-        error: event.message,
-        toolRequest: undefined,
-      }));
+      updateAssistant(chatId, messageId, (message) => {
+        const failedAt = Date.now();
+        return {
+          ...message,
+          status: "error",
+          error: event.message,
+          toolRequest: undefined,
+          work: message.work?.items.length
+            ? {
+                ...message.work,
+                pausedAt: undefined,
+                completedAt: message.work.completedAt ?? failedAt,
+                items: message.work.items.map((item) =>
+                  item.type === "tool" &&
+                  (item.status === "running" || item.status === "awaiting_approval")
+                    ? { ...item, status: "failed" as const, completedAt: failedAt }
+                    : item,
+                ),
+              }
+            : message.work,
+        };
+      });
     }
   }
 
@@ -258,12 +461,35 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       );
     } catch (error) {
       const cancelled = error instanceof DOMException && error.name === "AbortError";
-      updateAssistant(chatId, messageId, (message) => ({
-        ...message,
-        status: cancelled && message.content ? "done" : "error",
-        error: cancelled && !message.content ? "Response stopped." : cancelled ? undefined : error instanceof Error ? error.message : "Donna could not respond.",
-        toolRequest: undefined,
-      }));
+      updateAssistant(chatId, messageId, (message) => {
+        const stoppedAt = Date.now();
+        return {
+          ...message,
+          status: cancelled && message.content ? "done" : "error",
+          error:
+            cancelled && !message.content
+              ? "Response stopped."
+              : cancelled
+                ? undefined
+                : error instanceof Error
+                  ? error.message
+                  : "Donna could not respond.",
+          toolRequest: undefined,
+          work: message.work?.items.length
+            ? {
+                ...message.work,
+                pausedAt: undefined,
+                completedAt: message.work.completedAt ?? stoppedAt,
+                items: message.work.items.map((item) =>
+                  item.type === "tool" &&
+                  (item.status === "running" || item.status === "awaiting_approval")
+                    ? { ...item, status: "failed" as const, completedAt: stoppedAt }
+                    : item,
+                ),
+              }
+            : message.work,
+        };
+      });
     } finally {
       if (activeRequestRef.current === controller) activeRequestRef.current = null;
       setBusyState(false);
@@ -286,6 +512,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       role: "assistant",
       content: "",
       status: "pending",
+      work: { startedAt: now, items: [] },
     };
 
     setChatStore((current) => {
@@ -400,7 +627,12 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
     setBusyState(true);
 
     updateAssistant(chatId, messageId, (current) => ({
-      ...current,
+      ...setToolStatus(
+        resumeWorkClock(current),
+        toolRequest.toolCallId,
+        approved ? "running" : "rejected",
+        approved ? undefined : Date.now(),
+      ),
       status: "pending",
       toolRequest: undefined,
     }));
@@ -416,6 +648,15 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         } catch (toolError) {
           approved = false;
           error = toolError instanceof Error ? toolError.message : "The page could not be read.";
+          updateAssistant(chatId, messageId, (current) => ({
+            ...setToolStatus(
+              current,
+              toolRequest.toolCallId,
+              "failed",
+              Date.now(),
+            ),
+            status: "pending",
+          }));
         }
       }
     } else {
@@ -454,6 +695,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       role: "assistant",
       content: "",
       status: "pending",
+      work: { startedAt: Date.now(), items: [] },
     };
 
     // Show the instruction as a normal user turn, then stream the resumed
@@ -463,13 +705,25 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       ...chat,
       updatedAt: Date.now(),
       messages: [
-        ...chat.messages
-          .filter(
-            (candidate) => !(candidate.id === messageId && !candidate.content.trim()),
-          )
-          .map((candidate) =>
+        ...chat.messages.map((candidate) =>
             candidate.id === messageId
-              ? { ...candidate, status: "done" as const, toolRequest: undefined }
+              ? {
+                  ...setToolStatus(
+                    candidate,
+                    toolRequest.toolCallId,
+                    "rejected",
+                    Date.now(),
+                  ),
+                  status: "done" as const,
+                  toolRequest: undefined,
+                  work: candidate.work?.items.length
+                    ? {
+                        ...candidate.work,
+                        pausedAt: undefined,
+                        completedAt: candidate.work.completedAt ?? Date.now(),
+                      }
+                    : candidate.work,
+                }
               : candidate,
           ),
         userMessage,
@@ -505,6 +759,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       content: "",
       status: "pending",
       error: undefined,
+      work: { startedAt: Date.now(), items: [] },
     }));
     void executeRequest(chatId, messageId, (signal, onEvent) =>
       streamChat({
@@ -534,10 +789,11 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         <div className="chat-topbar-actions">
           <button
             type="button"
-            className="icon-button app-tooltip app-tooltip--bottom"
+            className="icon-button app-tooltip app-tooltip--bottom app-tooltip--multiline"
             onClick={handleNewChat}
             aria-label="New chat"
-            data-tooltip="New chat"
+            aria-keyshortcuts="Control+Shift+O"
+            data-tooltip={"New chat\nCtrl+Shift+O"}
           >
             <HugeiconsIcon icon={PlusSignIcon} size={20} />
           </button>
@@ -584,6 +840,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
                 onSend={handleSend}
                 busy={busy}
                 disabled={!hydrated || hasPendingApproval}
+                captureGlobalTyping={!sidebarOpen}
                 onCancel={handleCancel}
               />
             </div>
@@ -597,6 +854,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
               onSend={handleSend}
               busy={busy}
               disabled={!hydrated || hasPendingApproval}
+              captureGlobalTyping={!sidebarOpen}
               onCancel={handleCancel}
             />
           </div>
@@ -609,6 +867,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         activeChatId={chatStore.activeChatId}
         busy={busy}
         onClose={() => setSidebarOpen(false)}
+        onSearchChats={searchChats}
         onNewChat={handleNewChat}
         onSelectChat={handleSelectChat}
         onRenameChat={handleRenameChat}

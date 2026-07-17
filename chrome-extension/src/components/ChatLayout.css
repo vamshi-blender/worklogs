@@ -93,6 +93,11 @@
   transform: translate(-50%, 4px);
 }
 
+.app-tooltip--multiline::after {
+  text-align: center;
+  white-space: pre-line;
+}
+
 .app-tooltip:hover::before,
 .app-tooltip:hover::after,
 .app-tooltip:focus-visible::before,
