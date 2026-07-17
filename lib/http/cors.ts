@@ -1,31 +1,19 @@
-function configuredOrigins(): Set<string> {
-  return new Set(
-    (process.env.ALLOWED_EXTENSION_ORIGINS ?? "")
-      .split(",")
-      .map((origin) => origin.trim())
-      .filter(Boolean),
-  );
-}
-
-export function getAllowedOrigin(request: Request): string | null {
-  const origin = request.headers.get("origin");
-
-  // Origin-less requests are useful for local curl/API testing. They are not
-  // accepted once the production endpoint is enabled.
-  if (!origin) return process.env.NODE_ENV === "production" ? null : "";
-
-  const requestUrl = new URL(request.url);
-  if (origin === requestUrl.origin) return origin;
-
-  return configuredOrigins().has(origin) ? origin : null;
+// SECURITY: the exact-origin CORS allowlist (ALLOWED_EXTENSION_ORIGINS env
+// var, same-origin check, origin-less request rejection in production) was
+// replaced here with a wildcard, so the extension works from any install
+// (extension IDs vary per machine/build) without an env allowlist.
+// Anyone who can reach the server can call these endpoints — dev-phase
+// decision; see this commit to restore the allowlist, and pair it with
+// authentication before any real production deployment.
+export function getAllowedOrigin(_request: Request): string | null {
+  return "*";
 }
 
 export function corsHeaders(origin: string): HeadersInit {
   return {
-    ...(origin ? { "Access-Control-Allow-Origin": origin } : {}),
+    "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Max-Age": "86400",
-    Vary: "Origin",
   };
 }

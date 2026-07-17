@@ -7,8 +7,11 @@ export default defineManifest({
   description:
     "Donna opens in a floating pop-out window, with optional popup and side-panel modes.",
   permissions: ["activeTab", "scripting", "sidePanel", "storage"],
-  host_permissions: ["http://localhost:3000/*", "http://127.0.0.1:3000/*"],
-  optional_host_permissions: ["https://*/*"],
+  // SECURITY: broadened from localhost-only host_permissions (plus
+  // optional_host_permissions with per-URL runtime grants) to all http/https
+  // sites, so the extension works on every page and backend without prompts.
+  // Dev-phase decision; see this commit to restore the narrow grants.
+  host_permissions: ["http://*/*", "https://*/*"],
   icons: {
     16: "public/icons/icon16.png",
     32: "public/icons/icon32.png",

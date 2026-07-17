@@ -9,12 +9,8 @@ const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
 function unavailableReason(): string | null {
   if (!process.env.OPENAI_API_KEY) return "OPENAI_API_KEY is not configured.";
-  if (
-    process.env.NODE_ENV === "production" &&
-    process.env.ENABLE_PRODUCTION_CHAT !== "true"
-  ) {
-    return "Production transcription is disabled until authentication and rate limiting are configured.";
-  }
+  // SECURITY: the ENABLE_PRODUCTION_CHAT production kill-switch was removed
+  // here (dev-phase decision; see this commit).
   return null;
 }
 

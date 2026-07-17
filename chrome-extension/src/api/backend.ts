@@ -31,21 +31,10 @@ export async function getBackendUrl(): Promise<string> {
 }
 
 export async function saveBackendUrl(value: string): Promise<string> {
+  // SECURITY: the per-origin chrome.permissions.contains/request flow was
+  // removed here — all http/https hosts are now granted via host_permissions
+  // in the manifest. Dev-phase decision; see this commit to restore it.
   const backendUrl = normalizeBackendUrl(value);
-  const originPattern = `${backendUrl}/*`;
-  const alreadyAllowed = await chrome.permissions.contains({
-    origins: [originPattern],
-  });
-
-  if (!alreadyAllowed) {
-    const granted = await chrome.permissions.request({
-      origins: [originPattern],
-    });
-    if (!granted) {
-      throw new Error("Chrome permission for this backend was not granted.");
-    }
-  }
-
   await chrome.storage.sync.set({ [BACKEND_URL_KEY]: backendUrl });
   return backendUrl;
 }

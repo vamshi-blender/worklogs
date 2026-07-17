@@ -18,12 +18,8 @@ const titleResponseSchema = z.object({
 
 function unavailableReason(): string | null {
   if (!process.env.OPENAI_API_KEY) return "OPENAI_API_KEY is not configured.";
-  if (
-    process.env.NODE_ENV === "production" &&
-    process.env.ENABLE_PRODUCTION_CHAT !== "true"
-  ) {
-    return "Production chat is disabled until authentication is configured.";
-  }
+  // SECURITY: the ENABLE_PRODUCTION_CHAT production kill-switch was removed
+  // here (dev-phase decision; see this commit).
   return null;
 }
 

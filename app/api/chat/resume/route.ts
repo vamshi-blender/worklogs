@@ -31,16 +31,8 @@ export async function POST(request: Request) {
     return Response.json({ error: "Origin is not allowed." }, { status: 403 });
   }
 
-  if (
-    process.env.NODE_ENV === "production" &&
-    process.env.ENABLE_PRODUCTION_CHAT !== "true"
-  ) {
-    return Response.json(
-      { error: "Production chat is disabled." },
-      { status: 503, headers: corsHeaders(origin) },
-    );
-  }
-
+  // SECURITY: the ENABLE_PRODUCTION_CHAT production kill-switch was removed
+  // here (dev-phase decision; see this commit).
   let body: unknown;
   try {
     body = await request.json();
