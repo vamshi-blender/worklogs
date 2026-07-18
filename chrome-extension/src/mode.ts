@@ -10,7 +10,10 @@ export const POPOUT_PATH = "src/popout.html";
 
 // Enable the new toolbar-icon behavior before removing the old one, so the
 // icon is never left doing nothing mid-transition. (When both are set, the
-// popup wins, which is harmless.) In pop-out mode both are intentionally off:
+// popup wins, which is harmless.) Side-panel mode must open natively via
+// openPanelOnActionClick: sidePanel.open() from a cold-started background
+// worker loses the click's user gesture and throws; the panel page anchors
+// the PMS tab-group session itself on mount. In pop-out mode both are off:
 // the icon then fires chrome.action.onClicked, handled in background.ts.
 export async function applyMode(mode: DisplayMode): Promise<void> {
   if (mode === "sidepanel") {

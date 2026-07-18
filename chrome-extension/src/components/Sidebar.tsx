@@ -20,8 +20,6 @@ import "./Sidebar.css";
 
 const TRANSITION_MS = 220;
 
-// Placeholder until real user identity is wired up.
-const CURRENT_USER_NAME = "Vamshi";
 const CURRENT_USER_PLAN = "Free";
 
 export interface SidebarChat {
@@ -33,6 +31,8 @@ export interface SidebarChat {
 
 interface SidebarProps {
   open: boolean;
+  // Real name from the PMS session; empty while it loads.
+  userName: string;
   chats: SidebarChat[];
   activeChatId: string | null;
   busy: boolean;
@@ -47,6 +47,7 @@ interface SidebarProps {
 
 export default function Sidebar({
   open,
+  userName,
   chats,
   activeChatId,
   busy,
@@ -529,10 +530,10 @@ export default function Sidebar({
         <div className="sidebar-footer">
           <button type="button" className="sidebar-user-row">
             <span className="sidebar-user-avatar" aria-hidden="true">
-              {CURRENT_USER_NAME.charAt(0)}
+              {userName.charAt(0)}
             </span>
             <span className="sidebar-user-info">
-              <span className="sidebar-user-name">{CURRENT_USER_NAME}</span>
+              <span className="sidebar-user-name">{userName}</span>
               <span className="sidebar-user-plan">{CURRENT_USER_PLAN}</span>
             </span>
           </button>

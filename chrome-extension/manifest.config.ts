@@ -6,7 +6,16 @@ export default defineManifest({
   version: "1.0.0",
   description:
     "Donna opens in a floating pop-out window, with optional popup and side-panel modes.",
-  permissions: ["activeTab", "scripting", "sidePanel", "storage"],
+  // "tabs" gives reliable tab.url on every scheme for PMS matching; "tabGroups"
+  // covers tabGroups.get/update/onRemoved for the session tab-group scope.
+  permissions: [
+    "activeTab",
+    "scripting",
+    "sidePanel",
+    "storage",
+    "tabGroups",
+    "tabs",
+  ],
   // SECURITY: broadened from localhost-only host_permissions (plus
   // optional_host_permissions with per-URL runtime grants) to all http/https
   // sites, so the extension works on every page and backend without prompts.

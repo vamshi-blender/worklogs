@@ -23,6 +23,7 @@ import {
 } from "../api/chat";
 import { createChatSearcher } from "../api/chatSearch";
 import { executeClientTool } from "../api/clientTools";
+import { getPmsUserDetails } from "../api/pmsAuth";
 import type { ChatStreamEvent } from "../api/protocol";
 import {
   createChatTitle,
@@ -34,8 +35,6 @@ import {
 } from "../api/chatStorage";
 import "./ChatLayout.css";
 
-// Placeholder until real user identity is wired up.
-const CURRENT_USER_NAME = "Vamshi";
 const EMPTY_MESSAGES: ChatMessage[] = [];
 
 function getWorkLog(message: ChatMessage, startedAt = Date.now()): AgentWorkLog {
@@ -88,6 +87,8 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   const [busy, setBusy] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
+  // Real identity from the PMS session; empty until the fetch resolves.
+  const [userName, setUserName] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const activeRequestRef = useRef<AbortController | null>(null);
@@ -122,6 +123,20 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       .finally(() => setHydrated(true));
 
     return () => activeRequestRef.current?.abort();
+  }, []);
+
+  // ChatLayout only mounts with a live PMS session (App.tsx gates it), so
+  // this normally resolves; on failure the UI just stays nameless.
+  useEffect(() => {
+    let cancelled = false;
+    getPmsUserDetails()
+      .then((user) => {
+        if (!cancelled) setUserName(user.firstName);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -849,7 +864,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       ) : (
         <main className="chat-main">
           <div className="chat-composer-area">
-            <Greeting userName={CURRENT_USER_NAME} />
+            {userName && <Greeting userName={userName} />}
             <Composer
               onSend={handleSend}
               busy={busy}
@@ -863,6 +878,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
 
       <Sidebar
         open={sidebarOpen}
+        userName={userName}
         chats={sidebarChats}
         activeChatId={chatStore.activeChatId}
         busy={busy}

@@ -1,0 +1,81 @@
+.pms-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100vh;
+  padding: 24px;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.pms-gate-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 8px;
+  border-radius: var(--radius-full);
+  background: var(--surface-composer);
+  color: var(--text-secondary);
+}
+
+.pms-gate-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border-divider);
+  border-top-color: var(--text-secondary);
+  border-radius: var(--radius-full);
+  animation: pms-gate-spin 0.7s linear infinite;
+}
+
+@keyframes pms-gate-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pms-gate-spinner {
+    animation-duration: 1.4s;
+  }
+}
+
+.pms-gate-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: var(--font-weight-semibold);
+}
+
+.pms-gate-text {
+  margin: 0;
+  max-width: 280px;
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+  color: var(--text-secondary);
+}
+
+.pms-gate-button {
+  margin-top: 16px;
+  padding: 8px 20px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--accent-fill);
+  color: var(--text-on-accent);
+  font-size: var(--text-sm-size);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+}
+
+.pms-gate-button:hover {
+  background: var(--accent-fill-hover);
+}
+
+.pms-gate-hint {
+  margin: 8px 0 0;
+  font-size: var(--text-xs-size);
+  color: var(--text-tertiary);
+}

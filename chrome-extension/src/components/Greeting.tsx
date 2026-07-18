@@ -1,13 +1,41 @@
+import { useEffect, useState } from "react";
 import "./Greeting.css";
 
 interface GreetingProps {
   userName: string;
 }
 
-export default function Greeting({ userName }: GreetingProps) {
-  const variants = [`How can I help, ${userName}?`, `Hey, ${userName}. Ready to dive in?`];
-  const nameScore = [...userName].reduce((sum, character) => sum + character.charCodeAt(0), 0);
-  const text = variants[nameScore % variants.length];
+const ROTATE_MS = 6000;
 
-  return <h1 className="greeting">{text}</h1>;
+function buildVariants(userName: string): string[] {
+  return [
+    `How can I help, ${userName}?`,
+    `Hey, ${userName}. Ready to dive in?`,
+    `Welcome back, ${userName}.`,
+    `What are we working on today, ${userName}?`,
+    `Good to see you, ${userName}.`,
+    `Where should we start, ${userName}?`,
+  ];
+}
+
+export default function Greeting({ userName }: GreetingProps) {
+  const variants = buildVariants(userName);
+  const [index, setIndex] = useState(0);
+
+  // Reset to the first line whenever the name itself changes (e.g. resolves
+  // after login), then keep cycling continuously.
+  useEffect(() => setIndex(0), [userName]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setIndex((current) => (current + 1) % variants.length);
+    }, ROTATE_MS);
+    return () => clearInterval(timer);
+  }, [variants.length]);
+
+  return (
+    <h1 className="greeting" key={index}>
+      {variants[index]}
+    </h1>
+  );
 }

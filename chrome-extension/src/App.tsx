@@ -1,10 +1,81 @@
+import { useEffect, useRef, useState } from "react";
 import type { DisplayMode } from "./mode";
 import ChatLayout from "./components/ChatLayout";
+import PmsSessionGate from "./components/PmsSessionGate";
+import { getPmsAuthState } from "./api/pmsAuth";
+
+// How often the PMS session is re-checked once settled (steady-state poll).
+// The same poll flips the UI both ways: gate → chat on login, chat → gate on
+// logout. The check reads the token fresh from the PMS tab each time.
+const AUTH_POLL_MS = 4000;
+
+// While unauthenticated, PMS can take a few seconds to finish its own
+// client-side bootstrap and write its session into localStorage — well after
+// the tab itself reports "complete". Rather than judge the user logged-out
+// on the first miss, keep polling quickly and hold the spinner up to this
+// long before conceding to the login gate. Tune this one number to change
+// how long the grace period lasts.
+const AUTH_GRACE_MS = 3_000;
+const AUTH_GRACE_POLL_MS = 800;
+
+type AuthPhase = "checking" | "authed" | "gate";
 
 interface AppProps {
   ctx: DisplayMode;
 }
 
 export default function App({ ctx }: AppProps) {
-  return <ChatLayout ctx={ctx} />;
+  const [phase, setPhase] = useState<AuthPhase>("checking");
+  const graceDeadlineRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const scheduleNext = (delay: number) => {
+      if (cancelled) return;
+      timer = setTimeout(() => void check(), delay);
+    };
+
+    const check = async () => {
+      const state = await getPmsAuthState();
+      if (cancelled) return;
+
+      if (state.status === "ok") {
+        graceDeadlineRef.current = null;
+        setPhase("authed");
+        scheduleNext(AUTH_POLL_MS);
+        return;
+      }
+
+      // Not authed yet. "no-tab" (no PMS tab exists at all) has nothing to
+      // wait on, so it goes straight to the gate; "logged-out"/"loading"
+      // both get the grace window, since a fresh tab briefly reads as
+      // logged-out before its session is written.
+      if (state.status === "no-tab") {
+        graceDeadlineRef.current = null;
+        setPhase("gate");
+        scheduleNext(AUTH_POLL_MS);
+        return;
+      }
+
+      const deadline = (graceDeadlineRef.current ??= Date.now() + AUTH_GRACE_MS);
+      if (Date.now() < deadline) {
+        setPhase("checking");
+        scheduleNext(AUTH_GRACE_POLL_MS);
+      } else {
+        setPhase("gate");
+        scheduleNext(AUTH_POLL_MS);
+      }
+    };
+
+    void check();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  if (phase === "authed") return <ChatLayout ctx={ctx} />;
+  return <PmsSessionGate mode={phase === "checking" ? "checking" : "gate"} />;
 }
