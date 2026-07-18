@@ -121,6 +121,12 @@ export interface PmsUser {
   firstName: string;
   lastName: string;
   email: string;
+  /** Identity fields the PMS executor/resolvers key their calls on. */
+  fullName: string;
+  userId: string;
+  employeeCode: string;
+  contactNumber: string;
+  organizationId: string;
 }
 
 export async function getPmsUserDetails(): Promise<PmsUser> {
@@ -130,10 +136,17 @@ export async function getPmsUserDetails(): Promise<PmsUser> {
   }
   const data: unknown = await response.json();
   const record = (data ?? {}) as Record<string, unknown>;
+  const str = (key: string) =>
+    typeof record[key] === "string" ? (record[key] as string) : "";
   return {
-    firstName: typeof record.FirstName === "string" ? record.FirstName : "",
-    lastName: typeof record.LastName === "string" ? record.LastName : "",
-    email: typeof record.EmailId === "string" ? record.EmailId : "",
+    firstName: str("FirstName"),
+    lastName: str("LastName"),
+    email: str("EmailId"),
+    fullName: `${str("FirstName")} ${str("LastName")}`.trim(),
+    userId: str("UserId"),
+    employeeCode: str("EmployeeCode"),
+    contactNumber: str("ContactNumber"),
+    organizationId: str("OrganizationId"),
   };
 }
 

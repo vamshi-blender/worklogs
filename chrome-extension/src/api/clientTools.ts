@@ -1,3 +1,4 @@
+import { executePmsAction, runPmsLookup } from "../pms/executor";
 import type { ToolApprovalRequest } from "./protocol";
 
 interface PageContextArguments {
@@ -42,11 +43,7 @@ function readPageContext(options: PageContextArguments) {
   };
 }
 
-export async function executeClientTool(request: ToolApprovalRequest) {
-  if (request.executor !== "client" || request.name !== "get_current_page_context") {
-    throw new Error("Donna requested a browser tool that is not allowed.");
-  }
-
+async function executePageContext(request: ToolApprovalRequest) {
   const args = parsePageContextArguments(request.arguments);
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.id) throw new Error("No active browser tab is available.");
@@ -62,4 +59,41 @@ export async function executeClientTool(request: ToolApprovalRequest) {
   }
 
   return execution.result;
+}
+
+async function executePmsLookupTool(request: ToolApprovalRequest) {
+  const lookup = request.arguments.lookup;
+  if (typeof lookup !== "string" || !lookup) {
+    throw new Error("Donna requested a PMS lookup without naming it.");
+  }
+  return runPmsLookup(lookup);
+}
+
+async function executeSubmitPmsAction(request: ToolApprovalRequest) {
+  const { actionName, fields } = request.arguments;
+  if (typeof actionName !== "string" || !actionName) {
+    throw new Error("Donna requested a PMS action without naming it.");
+  }
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) {
+    throw new Error("Donna requested a PMS action without its fields.");
+  }
+  return executePmsAction(actionName, fields as Record<string, unknown>);
+}
+
+const CLIENT_TOOL_HANDLERS: Record<
+  string,
+  (request: ToolApprovalRequest) => Promise<unknown>
+> = {
+  get_current_page_context: executePageContext,
+  pms_lookup: executePmsLookupTool,
+  submit_pms_action: executeSubmitPmsAction,
+};
+
+export async function executeClientTool(request: ToolApprovalRequest) {
+  const handler =
+    request.executor === "client" ? CLIENT_TOOL_HANDLERS[request.name] : undefined;
+  if (!handler) {
+    throw new Error("Donna requested a browser tool that is not allowed.");
+  }
+  return handler(request);
 }

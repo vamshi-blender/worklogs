@@ -1,4 +1,7 @@
-export type ClientToolName = "get_current_page_context";
+export type ClientToolName =
+  | "get_current_page_context"
+  | "pms_lookup"
+  | "submit_pms_action";
 
 export type ToolExecutor = "client" | "server";
 

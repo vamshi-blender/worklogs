@@ -21,6 +21,8 @@ import {
 
 const CLIENT_TOOL_NAMES = new Set<ClientToolName>([
   "get_current_page_context",
+  "pms_lookup",
+  "submit_pms_action",
 ]);
 
 const PRIVATE_TOOL_ARGUMENTS = new Set([

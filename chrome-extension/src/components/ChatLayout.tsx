@@ -24,6 +24,7 @@ import {
 import { createChatSearcher } from "../api/chatSearch";
 import { executeClientTool } from "../api/clientTools";
 import { getPmsUserDetails } from "../api/pmsAuth";
+import type { ToolApprovalRequest } from "../api/protocol";
 import type { ChatStreamEvent } from "../api/protocol";
 import {
   createChatTitle,
@@ -36,6 +37,11 @@ import {
 import "./ChatLayout.css";
 
 const EMPTY_MESSAGES: ChatMessage[] = [];
+
+// Read-only client tools that execute silently: no approval card, the run
+// resumes automatically. They still show up in the agent work log. Anything
+// that writes (submit_pms_action) keeps the explicit approval card.
+const AUTO_EXECUTED_TOOLS = new Set(["pms_lookup"]);
 
 function getWorkLog(message: ChatMessage, startedAt = Date.now()): AgentWorkLog {
   return message.work ?? { startedAt, items: [] };
@@ -92,6 +98,9 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const activeRequestRef = useRef<AbortController | null>(null);
+  // A silent tool request captured mid-stream; consumed (execute + resume)
+  // as soon as the paused stream settles.
+  const autoToolRef = useRef<ToolApprovalRequest | null>(null);
   const busyRef = useRef(false);
   const modeSwitchingRef = useRef(false);
 
@@ -406,11 +415,22 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
         };
       });
     } else if (event.type === "tool_approval.request") {
-      updateAssistant(chatId, messageId, (message) => ({
-        ...setToolStatus(message, event.toolCallId, "awaiting_approval"),
-        status: "approval",
-        toolRequest: event,
-      }));
+      if (AUTO_EXECUTED_TOOLS.has(event.name)) {
+        // Silent tool: no approval card. Keep the tool spinning in the work
+        // log and stash the request; executeRequest resumes the run once
+        // this (about-to-pause) stream closes.
+        autoToolRef.current = event;
+        updateAssistant(chatId, messageId, (message) => ({
+          ...setToolStatus(message, event.toolCallId, "running"),
+          status: "pending",
+        }));
+      } else {
+        updateAssistant(chatId, messageId, (message) => ({
+          ...setToolStatus(message, event.toolCallId, "awaiting_approval"),
+          status: "approval",
+          toolRequest: event,
+        }));
+      }
     } else if (event.type === "response.paused") {
       updateAssistant(chatId, messageId, (message) => ({
         ...message,
@@ -469,11 +489,21 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
     const controller = new AbortController();
     activeRequestRef.current = controller;
     setBusyState(true);
+    // Anything stashed by a previous stream is stale by definition.
+    autoToolRef.current = null;
 
     try {
       await request(controller.signal, (event) =>
         handleStreamEvent(chatId, messageId, event),
       );
+
+      // A silent tool paused this run: execute it in the extension and
+      // resume immediately — the user never sees an approval card.
+      const autoRequest = autoToolRef.current;
+      if (autoRequest && !controller.signal.aborted) {
+        autoToolRef.current = null;
+        await runAutoTool(chatId, messageId, autoRequest);
+      }
     } catch (error) {
       const cancelled = error instanceof DOMException && error.name === "AbortError";
       updateAssistant(chatId, messageId, (message) => {
@@ -509,6 +539,41 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
       if (activeRequestRef.current === controller) activeRequestRef.current = null;
       setBusyState(false);
     }
+  }
+
+  async function runAutoTool(
+    chatId: string,
+    messageId: string,
+    toolRequest: ToolApprovalRequest,
+  ) {
+    updateAssistant(chatId, messageId, (current) => resumeWorkClock(current));
+
+    let approved = true;
+    let result: unknown;
+    let error: string | undefined;
+    try {
+      result = await executeClientTool(toolRequest);
+    } catch (toolError) {
+      approved = false;
+      error =
+        toolError instanceof Error ? toolError.message : "The PMS call failed.";
+      updateAssistant(chatId, messageId, (current) => ({
+        ...setToolStatus(current, toolRequest.toolCallId, "failed", Date.now()),
+        status: "pending",
+      }));
+    }
+
+    await executeRequest(chatId, messageId, (signal, onEvent) =>
+      resumeChat({
+        runId: toolRequest.runId,
+        toolCallId: toolRequest.toolCallId,
+        approved,
+        result,
+        error,
+        signal,
+        onEvent,
+      }),
+    );
   }
 
   function handleSend(content: string) {

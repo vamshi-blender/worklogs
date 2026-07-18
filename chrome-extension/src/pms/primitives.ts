@@ -1,0 +1,135 @@
+// Quixy's generic data-transport calls ("Layer A"). Every PMS data fetch and
+// the final submit go through these thin wrappers; which GUIDs/columns they
+// are called with comes from the server-hosted manifest bundle. Request
+// shapes are verbatim from recorded form traffic.
+import { pmsFetch } from "../api/pmsAuth";
+import type {
+  PmsDataTableRowSource,
+  PmsDatasourceRowsSource,
+  PmsReportGridSource,
+} from "./types";
+
+type NameValue = { Name?: unknown; Value?: unknown };
+
+async function postJson(path: string, body: unknown): Promise<unknown> {
+  const response = await pmsFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`PMS call ${path} failed (${response.status}).`);
+  }
+  return response.json();
+}
+
+function rowToObject(row: NameValue[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const cell of row) {
+    if (typeof cell?.Name === "string") result[cell.Name] = cell.Value;
+  }
+  return result;
+}
+
+/** GetReferencedDataTableData — dependent columns for one key value. */
+export async function fetchDataTableRow(
+  source: PmsDataTableRowSource,
+  keyValue: string,
+): Promise<Record<string, unknown>> {
+  const data = await postJson("/api/DataTable/GetReferencedDataTableData", {
+    DataTableId: source.dataTableId,
+    DataTableFunctionId: source.functionId,
+    ReferencedElements: source.referencedElements.join(","),
+    DataTableDataReferenceDataDTOs: [
+      { ReferenceName: source.keyReference, IsFocused: true, Value: keyValue },
+    ],
+  });
+  const rows = Array.isArray(data) ? (data as NameValue[][]) : [];
+  if (!rows[0]) {
+    throw new Error(
+      `PMS returned no ${source.keyReference} record for "${keyValue}".`,
+    );
+  }
+  return rowToObject(rows[0]);
+}
+
+/** GetReferencedDataSourceData — datasource rows for given conditions. */
+export async function fetchDatasourceRows(
+  source: PmsDatasourceRowsSource,
+  keyValue: string,
+): Promise<Record<string, unknown>[]> {
+  const data = await postJson("/api/Datasource/GetReferencedDataSourceData", {
+    DataSourceId: source.dataSourceId,
+    DataSourceReferenceId: source.referenceId,
+    OutputColumns: source.outputColumns.join(","),
+    DataSourceReferenceConditions: [
+      {
+        DataSourceCollectionConditionLabelName: source.conditionLabel,
+        Value: keyValue,
+      },
+    ],
+  });
+  const rows = Array.isArray(data) ? (data as NameValue[][]) : [];
+  return rows.map(rowToObject);
+}
+
+/** GetGridReportData — rows of a datasource report (read-side screens). */
+export async function fetchReportGrid(
+  source: PmsReportGridSource,
+): Promise<Record<string, unknown>[]> {
+  const data = await postJson("/api/Report/GetGridReportData", {
+    reportId: source.reportId,
+    skip: 0,
+    top: source.top,
+    orderByFields: source.orderByFields,
+    filters: [],
+    groupAggregate: null,
+    isShowGrid: false,
+    isChartBasedReportGridCall: false,
+  });
+  // The grid endpoint wraps its rows as a JSON string in `results`.
+  const results = (data as { results?: unknown })?.results;
+  if (typeof results !== "string") return [];
+  const rows: unknown = JSON.parse(results);
+  return Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+}
+
+/** GetNextSerialNumber — server-side counter (plain-text response). */
+export async function fetchNextSerialNumber(
+  appElementId: string,
+  appId: string,
+  organizationId: string,
+): Promise<string> {
+  const query = new URLSearchParams({ appElementId, appId, organizationId });
+  const response = await pmsFetch(`/api/App/GetNextSerialNumber?${query}`);
+  if (!response.ok) {
+    throw new Error(`PMS serial number fetch failed (${response.status}).`);
+  }
+  const serial = (await response.text()).trim();
+  if (!serial) throw new Error("PMS returned an empty serial number.");
+  return serial;
+}
+
+export interface SaveAppDataResult {
+  appDataId: string;
+}
+
+/** SaveAppData — the one write call; submits a fully built form payload. */
+export async function saveAppData(
+  submitPath: string,
+  payload: Record<string, unknown>,
+): Promise<SaveAppDataResult> {
+  const data = (await postJson(submitPath, payload)) as {
+    Success?: unknown;
+    Data?: unknown;
+    ErrorMessage?: unknown;
+  };
+  if (data?.Success !== true) {
+    const message =
+      typeof data?.ErrorMessage === "string" && data.ErrorMessage
+        ? data.ErrorMessage
+        : "PMS rejected the submission.";
+    throw new Error(message);
+  }
+  return { appDataId: typeof data.Data === "string" ? data.Data : "" };
+}
