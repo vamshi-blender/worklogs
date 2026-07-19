@@ -1,0 +1,220 @@
+.voice-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  padding: var(--space-2);
+  background: transparent;
+  font-family: var(--font-sans);
+}
+
+.voice-screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--surface-canvas);
+  animation: voice-backdrop-in 240ms ease both;
+}
+
+.voice-screen--closing {
+  pointer-events: none;
+}
+
+.voice-screen--closing::before {
+  animation: voice-backdrop-out 190ms ease both;
+}
+
+.voice-card {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow: hidden;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-divider);
+  border-radius: var(--radius-card);
+  box-shadow: var(--voice-card-shadow);
+  animation: voice-card-in 260ms cubic-bezier(0.22, 0.75, 0.25, 1) both;
+}
+
+.voice-screen--closing .voice-card {
+  animation: voice-card-out 210ms cubic-bezier(0.4, 0, 0.6, 1) both;
+}
+
+/* Transcript fills the space above the glow/controls and scrolls on its
+   own; when empty it collapses to nothing and the foot centers via the
+   margin-top: auto below. Extra top margin gives it room to breathe below
+   the card's top edge before the fade begins. */
+.voice-card .voice-transcript {
+  flex: 1;
+  min-height: 0;
+  margin-top: var(--space-6);
+}
+
+.voice-card .voice-foot {
+  margin-top: auto;
+}
+
+/* A solid circle under heavy blur, rising from below the card's bottom edge
+   (matches the Figma ellipse + layer blur). Solid color rather than a
+   gradient so status changes can cross-fade via a background transition. */
+.voice-glow-stage {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: min(110%, 380px);
+  aspect-ratio: 1;
+  transform: translate(-50%, 52%);
+  pointer-events: none;
+  animation: voice-glow-in 180ms 220ms ease-out both;
+}
+
+/* --voice-amplitude (0–1) is written every frame by the voice session's
+   audio meter; the orb scales subtly with whoever is speaking. Silence sits
+   at scale 1; a loud peak grows it ~13%. The short transform transition
+   smooths the frame-to-frame steps into a fluid pulse. */
+.voice-glow {
+  --voice-amplitude: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--voice-glow-neutral);
+  filter: blur(48px);
+  transform: scale(calc(1 + 0.13 * var(--voice-amplitude)));
+  transition: background 400ms ease, transform 80ms linear;
+}
+
+.voice-card[data-status="listening"] .voice-glow {
+  background: var(--voice-glow-listening);
+}
+
+.voice-card[data-status="speaking"] .voice-glow {
+  background: var(--voice-glow-speaking);
+}
+
+.voice-card[data-status="thinking"] .voice-glow,
+.voice-card[data-status="working"] .voice-glow {
+  background: var(--voice-glow-speaking);
+}
+
+.voice-card[data-status="error"] .voice-glow {
+  background: var(--voice-glow-muted);
+}
+
+.voice-card[data-status="muted"] .voice-glow {
+  background: var(--voice-glow-muted);
+}
+
+.voice-foot {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  padding: 0 var(--space-4) var(--space-6);
+}
+
+.voice-status {
+  margin: 0;
+  max-width: 220px;
+  text-align: center;
+  font-size: var(--text-base-size);
+  font-weight: var(--font-weight-regular);
+  line-height: normal;
+  color: var(--text-secondary);
+}
+
+.voice-error {
+  max-width: 280px;
+  margin: calc(var(--space-6) * -1) 0 0;
+  color: var(--text-secondary);
+  text-align: center;
+  font-size: var(--text-sm-size);
+  line-height: var(--text-sm-line);
+}
+
+.voice-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.voice-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--voice-control-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.voice-action-btn:hover {
+  background: var(--voice-control-bg-hover);
+}
+
+.voice-action-btn:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.voice-action-btn:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+
+.voice-action-btn--soft {
+  background: var(--voice-control-soft-bg);
+}
+
+.voice-action-btn--soft:hover {
+  background: var(--voice-control-bg);
+}
+
+@keyframes voice-backdrop-in {
+  from { opacity: 0; }
+}
+
+@keyframes voice-backdrop-out {
+  to { opacity: 0; }
+}
+
+@keyframes voice-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+}
+
+@keyframes voice-card-out {
+  to {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+}
+
+@keyframes voice-glow-in {
+  from { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-screen::before,
+  .voice-card,
+  .voice-glow-stage {
+    animation: none;
+  }
+
+  .voice-card .voice-glow {
+    animation: none;
+    /* Ignore live amplitude — hold the orb static for reduced motion. */
+    transform: none;
+    transition: none;
+  }
+}

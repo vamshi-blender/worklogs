@@ -18,13 +18,9 @@ function buildVariants(userName: string): string[] {
   ];
 }
 
-export default function Greeting({ userName }: GreetingProps) {
+function RotatingGreeting({ userName }: GreetingProps) {
   const variants = buildVariants(userName);
   const [index, setIndex] = useState(0);
-
-  // Reset to the first line whenever the name itself changes (e.g. resolves
-  // after login), then keep cycling continuously.
-  useEffect(() => setIndex(0), [userName]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -38,4 +34,8 @@ export default function Greeting({ userName }: GreetingProps) {
       {variants[index]}
     </h1>
   );
+}
+
+export default function Greeting({ userName }: GreetingProps) {
+  return <RotatingGreeting key={userName} userName={userName} />;
 }

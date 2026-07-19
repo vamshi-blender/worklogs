@@ -3,7 +3,12 @@
 // and runs the PMS tab-group session flow on toolbar-icon clicks.
 // Live mode switching is handled by the page (App.tsx) — it applies the mode
 // itself and awaits it, so nothing races against a suspended worker.
-import { clearSessionIfGroup, ensureSessionTabGroup } from "./api/pmsSession";
+import {
+  endSessionIfGroup,
+  endSessionIfGroupLostPmsTab,
+  ensureSessionTabGroup,
+  getSessionTabGroupId,
+} from "./api/pmsSession";
 import { applyMode, getSavedMode, POPOUT_PATH } from "./mode";
 
 async function init() {
@@ -45,9 +50,36 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// A closed tab group ends the session scope it anchored.
+// A closed tab group ends the session scope it anchored — whether its tabs
+// were closed one by one down to the last one, or the whole group (and every
+// tab in it) was removed together via "Close group".
 chrome.tabGroups.onRemoved.addListener(async (group) => {
-  await clearSessionIfGroup(group.id);
+  await endSessionIfGroup(group.id);
+});
+
+// The session's PMS tab was closed while the group (and other tabs in it)
+// still exist — the group survives chrome.tabGroups.onRemoved, so it's
+// checked here instead. TabRemoveInfo carries no groupId (the tab is already
+// gone), so this just re-checks whatever group the session is currently
+// anchored to — cheap, and a no-op if that group lost no PMS tab.
+chrome.tabs.onRemoved.addListener(async (_tabId, info) => {
+  if (info.isWindowClosing) return;
+  const sessionGroupId = await getSessionTabGroupId();
+  if (sessionGroupId !== null) {
+    await endSessionIfGroupLostPmsTab(sessionGroupId);
+  }
+});
+
+// The PMS tab (or the whole group) was ungrouped rather than closed. Chrome
+// reports this as a tabs.onUpdated with groupId flipping to NONE; the tab
+// that ungrouped no longer belongs to the old group, so the same "does the
+// group still have a PMS tab" check applies to whatever group it came from.
+chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo) => {
+  if (changeInfo.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) return;
+  const sessionGroupId = await getSessionTabGroupId();
+  if (sessionGroupId !== null) {
+    await endSessionIfGroupLostPmsTab(sessionGroupId);
+  }
 });
 
 chrome.windows.onRemoved.addListener(async (windowId) => {
@@ -64,5 +96,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "open-popout") {
     openPopout().then(() => sendResponse(true));
     return true;
+  }
+});
+
+// Keyboard-shortcut equivalent of clicking the toolbar icon: does whatever
+// the current display mode would do on a click. Unlike action.onClicked,
+// commands.onCommand fires with its own user gesture even after a
+// cold-started worker, so sidePanel.open() is safe to call directly here.
+chrome.commands.onCommand.addListener(async (command, tab) => {
+  if (command !== "open-donna") return;
+
+  const mode = await getSavedMode();
+  if (mode === "popout") {
+    await ensureSessionTabGroup(tab);
+    await openPopout();
+  } else if (mode === "sidepanel") {
+    const win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] });
+    await chrome.sidePanel.open({ windowId: win.id! });
+  } else {
+    await chrome.action.openPopup();
   }
 });

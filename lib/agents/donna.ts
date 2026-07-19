@@ -3,6 +3,7 @@ import { z } from "zod";
 import { actionNames, getPmsBundle, queryableLookupNames } from "../pms/bundle";
 import { actionFieldsShape, capabilitiesCatalog } from "../pms/schema";
 import { CONFIRM_LABELS } from "./protocol";
+import { getServerTimeResult } from "./server-time";
 
 export interface ClientToolResult {
   ok: boolean;
@@ -26,28 +27,7 @@ const getServerTime = tool({
     "Return the current server date and time. Use this whenever the user asks for the current date or time.",
   parameters: serverTimeParameters,
   async execute({ timeZone }) {
-    const now = new Date();
-    let formatted: string;
-
-    try {
-      formatted = new Intl.DateTimeFormat("en-IN", {
-        dateStyle: "full",
-        timeStyle: "long",
-        timeZone: timeZone ?? "Asia/Calcutta",
-      }).format(now);
-    } catch {
-      formatted = new Intl.DateTimeFormat("en-IN", {
-        dateStyle: "full",
-        timeStyle: "long",
-        timeZone: "Asia/Calcutta",
-      }).format(now);
-    }
-
-    return JSON.stringify({
-      iso: now.toISOString(),
-      formatted,
-      requestedTimeZone: timeZone,
-    });
+    return JSON.stringify(getServerTimeResult({ timeZone }));
   },
 });
 

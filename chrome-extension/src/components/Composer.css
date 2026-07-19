@@ -52,6 +52,11 @@
   gap: var(--space-2);
 }
 
+/* The dictation ✕ / ✓ pair sits tighter together than the mic/send pair. */
+.composer--dictating .composer-trailing {
+  gap: var(--space-1);
+}
+
 .composer-tooltip {
   position: relative;
 }
@@ -175,7 +180,14 @@
   background: var(--accent-muted);
   color: var(--text-on-accent);
   cursor: not-allowed;
-  transition: background var(--transition-fast), color var(--transition-fast);
+  transition:
+    background var(--transition-fast),
+    color var(--transition-fast),
+    transform 100ms ease;
+}
+
+.composer-send-btn[aria-label="Voice mode"]:active {
+  transform: scale(0.9);
 }
 
 .composer-send-btn:not(:disabled) {
@@ -192,11 +204,72 @@
   cursor: pointer;
 }
 
-.composer-stop-glyph {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
+.composer-primary-icon {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+}
+
+.composer-primary-icon-layer {
+  display: inline-flex;
+  grid-area: 1 / 1;
+  opacity: 0;
+  transform: scale(0.78);
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+.composer-primary-icon-layer--active {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.composer-voice-icon {
+  width: 20px;
+  height: 20px;
   background: currentColor;
+  -webkit-mask: url("/icons/audio-lines-stroke-rounded.svg") center / contain no-repeat;
+  mask: url("/icons/audio-lines-stroke-rounded.svg") center / contain no-repeat;
+}
+
+.composer-waveform {
+  display: block;
+  width: 100%;
+  height: 40px;
+  color: var(--text-tertiary);
+}
+
+/* Cancel (✕) and confirm (✓) share one neutral style, like ChatGPT — both
+   are plain transparent icon buttons, no accent fill on the confirm. */
+.composer-dictation-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-button-size);
+  height: var(--icon-button-size);
+  flex-shrink: 0;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.composer-dictation-btn:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.composer-dictation-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* The confirm button becomes the processing spinner — stays fully opaque
+   while disabled so the spinner reads clearly, unlike the greyed cancel. */
+.composer-dictation-btn--busy:disabled {
+  opacity: 1;
+  cursor: default;
 }
 
 @keyframes composer-spinner {
@@ -206,5 +279,13 @@
 @media (prefers-reduced-motion: reduce) {
   .composer-mic-loading-icon {
     animation: none;
+  }
+
+  .composer-primary-icon-layer {
+    transition: none;
+  }
+
+  .composer-send-btn {
+    transition: none;
   }
 }

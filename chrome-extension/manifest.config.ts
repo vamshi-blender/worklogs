@@ -37,6 +37,14 @@ export default defineManifest({
   side_panel: {
     default_path: "src/sidepanel.html",
   },
+  commands: {
+    "open-donna": {
+      suggested_key: {
+        default: "Ctrl+Shift+Y",
+      },
+      description: "Open Donna",
+    },
+  },
   background: {
     service_worker: "src/background.ts",
     type: "module",

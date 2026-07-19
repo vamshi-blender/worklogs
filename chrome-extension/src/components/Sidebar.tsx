@@ -75,7 +75,6 @@ export default function Sidebar({
   const [backendHint, setBackendHint] = useState("");
   const menuAnchorRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const renameCancelledRef = useRef(false);
 
   useEffect(() => {
     getSavedTheme().then(setTheme);
@@ -211,17 +210,13 @@ export default function Sidebar({
   }, [menuOpenFor]);
 
   function startRename(chat: SidebarChat) {
-    renameCancelledRef.current = false;
     setRenameValue(chat.title);
     setRenamingId(chat.id);
     setMenuOpenFor(null);
   }
 
-  function commitRename(chatId: string) {
-    if (renameCancelledRef.current) {
-      renameCancelledRef.current = false;
-      return;
-    }
+  function commitRename(chatId: string, cancelled = false) {
+    if (cancelled) return;
     const title = renameValue.trim();
     if (title) onRenameChat(chatId, title);
     setRenamingId(null);
@@ -263,14 +258,16 @@ export default function Sidebar({
                   aria-label={`Rename ${chat.title}`}
                   onFocus={(event) => event.currentTarget.select()}
                   onChange={(event) => setRenameValue(event.target.value)}
-                  onBlur={() => commitRename(chat.id)}
+                  onBlur={(event) => {
+                    commitRename(chat.id, event.currentTarget.dataset.cancelled === "true");
+                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
                       commitRename(chat.id);
                     } else if (event.key === "Escape") {
                       event.preventDefault();
-                      renameCancelledRef.current = true;
+                      event.currentTarget.dataset.cancelled = "true";
                       setRenamingId(null);
                     }
                   }}

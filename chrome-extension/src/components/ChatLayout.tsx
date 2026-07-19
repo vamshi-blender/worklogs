@@ -10,6 +10,7 @@ import { getSavedMode, switchMode, type DisplayMode } from "../mode";
 import Sidebar, { type SidebarChat } from "./Sidebar";
 import Composer from "./Composer";
 import Greeting from "./Greeting";
+import VoiceScreen from "./VoiceScreen";
 import MessageList, {
   type AgentWorkLog,
   type ChatMessage,
@@ -26,6 +27,7 @@ import { executeClientTool } from "../api/clientTools";
 import { getPmsUserDetails } from "../api/pmsAuth";
 import type { ToolApprovalRequest } from "../api/protocol";
 import type { ChatStreamEvent } from "../api/protocol";
+import { useVoiceSession } from "../realtime/useVoiceSession";
 import {
   createChatTitle,
   EMPTY_CHAT_STORE,
@@ -95,6 +97,8 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   const [composerHeight, setComposerHeight] = useState(0);
   // Real identity from the PMS session; empty until the fetch resolves.
   const [userName, setUserName] = useState("");
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const [voiceClosing, setVoiceClosing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const activeRequestRef = useRef<AbortController | null>(null);
@@ -107,6 +111,7 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   const activeChat =
     chatStore.chats.find((chat) => chat.id === chatStore.activeChatId) ?? null;
   const messages = activeChat?.messages ?? EMPTY_MESSAGES;
+  const voiceSession = useVoiceSession(messages, userName, handleCloseVoice);
   const conversationId = activeChat?.conversationId ?? null;
   const hasMessages = messages.length > 0;
   const hasPendingApproval = messages.some((message) => message.status === "approval");
@@ -645,6 +650,29 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
     activeRequestRef.current?.abort();
   }
 
+  function handleOpenVoice() {
+    setVoiceClosing(false);
+    setVoiceOpen(true);
+    void voiceSession.start();
+  }
+
+  function handleCloseVoice() {
+    if (voiceClosing) return;
+    voiceSession.end();
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setVoiceOpen(false);
+      return;
+    }
+
+    setVoiceClosing(true);
+  }
+
+  function handleVoiceExitComplete() {
+    setVoiceOpen(false);
+    setVoiceClosing(false);
+  }
+
   function handleNewChat() {
     handleCancel();
     setChatStore((current) => ({ ...current, activeChatId: null }));
@@ -852,93 +880,116 @@ export default function ChatLayout({ ctx }: ChatLayoutProps) {
   }
 
   return (
-    <div className="chat-layout">
-      <header className="chat-topbar">
-        <div className="chat-topbar-brand">
-          <button
-            type="button"
-            className="icon-button sidebar-trigger app-tooltip app-tooltip--bottom app-tooltip--start"
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open sidebar"
-            data-tooltip="Open sidebar"
-          >
-            <HugeiconsIcon icon={MenuTwoLineIcon} size={20} />
-          </button>
-          <span className="chat-brand-name">Donna</span>
-        </div>
-        <div className="chat-topbar-actions">
-          <button
-            type="button"
-            className="icon-button app-tooltip app-tooltip--bottom app-tooltip--multiline"
-            onClick={handleNewChat}
-            aria-label="New chat"
-            aria-keyshortcuts="Control+Shift+O"
-            data-tooltip={"New chat\nCtrl+Shift+O"}
-          >
-            <HugeiconsIcon icon={PlusSignIcon} size={20} />
-          </button>
-          <button
-            type="button"
-            className="display-mode-toggle-btn app-tooltip app-tooltip--bottom app-tooltip--end"
-            aria-pressed={displayMode === "sidepanel"}
-            onClick={() =>
-              handleToggleDisplayMode(displayMode === "sidepanel" ? "popout" : "sidepanel")
-            }
-            aria-label={
-              displayMode === "sidepanel" ? "Switch to pop-out window" : "Switch to side panel"
-            }
-            data-tooltip={displayMode === "sidepanel" ? "Pop out window" : "Side panel"}
-          >
-            <HugeiconsIcon
-              icon={displayMode === "sidepanel" ? PictureInPictureOnIcon : PanelRightIcon}
-              size={20}
-            />
-          </button>
-        </div>
-      </header>
-      {modeHint && <p className="chat-topbar-hint">{modeHint}</p>}
-
-      {hasMessages ? (
-        <div className="chat-thread">
-          <div className="chat-scroll" ref={scrollRef}>
-            <MessageList
-              messages={messages}
-              onApproveTool={(messageId) => void handleToolDecision(messageId, true)}
-              onRejectTool={(messageId) => void handleToolDecision(messageId, false)}
-              onInstructTool={handleToolInstruction}
-              onRetry={handleRetry}
-            />
-            {/* Keep the last message actions comfortably clear of the floating composer. */}
-            <div
-              className="chat-scroll-spacer"
-              style={{ height: `calc(${composerHeight}px + var(--space-6))` }}
-            />
+    <div
+      className={`chat-layout${
+        voiceOpen && !voiceClosing ? " chat-layout--voice-open" : ""
+      }${voiceClosing ? " chat-layout--voice-closing" : ""}`}
+    >
+      <div className="chat-stage">
+        <header className="chat-topbar">
+          <div className="chat-topbar-brand">
+            <button
+              type="button"
+              className="icon-button sidebar-trigger app-tooltip app-tooltip--bottom app-tooltip--start"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open sidebar"
+              data-tooltip="Open sidebar"
+            >
+              <HugeiconsIcon icon={MenuTwoLineIcon} size={20} />
+            </button>
+            <span className="chat-brand-name">Donna</span>
           </div>
-          <div className="chat-composer-dock" ref={composerDockRef}>
+          <div className="chat-topbar-actions">
+            <button
+              type="button"
+              className="icon-button app-tooltip app-tooltip--bottom app-tooltip--multiline"
+              onClick={handleNewChat}
+              aria-label="New chat"
+              aria-keyshortcuts="Control+Shift+O"
+              data-tooltip={"New chat\nCtrl+Shift+O"}
+            >
+              <HugeiconsIcon icon={PlusSignIcon} size={20} />
+            </button>
+            <button
+              type="button"
+              className="display-mode-toggle-btn app-tooltip app-tooltip--bottom app-tooltip--end"
+              aria-pressed={displayMode === "sidepanel"}
+              onClick={() =>
+                handleToggleDisplayMode(displayMode === "sidepanel" ? "popout" : "sidepanel")
+              }
+              aria-label={
+                displayMode === "sidepanel" ? "Switch to pop-out window" : "Switch to side panel"
+              }
+              data-tooltip={displayMode === "sidepanel" ? "Pop out window" : "Side panel"}
+            >
+              <HugeiconsIcon
+                icon={displayMode === "sidepanel" ? PictureInPictureOnIcon : PanelRightIcon}
+                size={20}
+              />
+            </button>
+          </div>
+        </header>
+        {modeHint && <p className="chat-topbar-hint">{modeHint}</p>}
+
+        {hasMessages ? (
+          <div className="chat-thread">
+            <div className="chat-scroll" ref={scrollRef}>
+              <MessageList
+                messages={messages}
+                onApproveTool={(messageId) => void handleToolDecision(messageId, true)}
+                onRejectTool={(messageId) => void handleToolDecision(messageId, false)}
+                onInstructTool={handleToolInstruction}
+                onRetry={handleRetry}
+              />
+              {/* Keep the last message actions comfortably clear of the floating composer. */}
+              <div
+                className="chat-scroll-spacer"
+                style={{ height: `calc(${composerHeight}px + var(--space-6))` }}
+              />
+            </div>
+            <div className="chat-composer-dock" ref={composerDockRef}>
+              <div className="chat-composer-area">
+                <Composer
+                  onSend={handleSend}
+                  busy={busy}
+                  disabled={!hydrated || hasPendingApproval}
+                  captureGlobalTyping={!sidebarOpen && !voiceOpen}
+                  onCancel={handleCancel}
+                  onVoiceMode={handleOpenVoice}
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
+          <main className="chat-main">
             <div className="chat-composer-area">
+              {userName && <Greeting userName={userName} />}
               <Composer
                 onSend={handleSend}
                 busy={busy}
                 disabled={!hydrated || hasPendingApproval}
-                captureGlobalTyping={!sidebarOpen}
+                captureGlobalTyping={!sidebarOpen && !voiceOpen}
                 onCancel={handleCancel}
+                onVoiceMode={handleOpenVoice}
               />
             </div>
-          </div>
-        </div>
-      ) : (
-        <main className="chat-main">
-          <div className="chat-composer-area">
-            {userName && <Greeting userName={userName} />}
-            <Composer
-              onSend={handleSend}
-              busy={busy}
-              disabled={!hydrated || hasPendingApproval}
-              captureGlobalTyping={!sidebarOpen}
-              onCancel={handleCancel}
-            />
-          </div>
-        </main>
+          </main>
+        )}
+      </div>
+
+      {voiceOpen && (
+        <VoiceScreen
+          status={voiceSession.status}
+          turns={voiceSession.turns}
+          muted={voiceSession.muted}
+          error={voiceSession.error}
+          onMutedChange={voiceSession.setMuted}
+          onRetry={() => void voiceSession.start()}
+          orbRef={voiceSession.setOrbElement}
+          closing={voiceClosing}
+          onClose={handleCloseVoice}
+          onExitComplete={handleVoiceExitComplete}
+        />
       )}
 
       <Sidebar

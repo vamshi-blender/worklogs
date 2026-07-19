@@ -104,9 +104,41 @@ export async function getSessionTabs(): Promise<chrome.tabs.Tab[]> {
   return chrome.tabs.query({ groupId });
 }
 
-export async function clearSessionIfGroup(groupId: number): Promise<void> {
+/**
+ * Ends the session if `groupId` is the one currently anchoring it: clears the
+ * stored scope and tells every open extension page to close itself, since
+ * there is no longer a tab group for the session to operate on. Safe to call
+ * speculatively — a no-op if `groupId` isn't the active session.
+ */
+export async function endSessionIfGroup(groupId: number): Promise<void> {
   const stored = await chrome.storage.session.get(SESSION_GROUP_KEY);
-  if (stored[SESSION_GROUP_KEY] === groupId) {
-    await chrome.storage.session.remove(SESSION_GROUP_KEY);
+  if (stored[SESSION_GROUP_KEY] !== groupId) return;
+
+  await chrome.storage.session.remove(SESSION_GROUP_KEY);
+  // No listener (e.g. no extension page open) rejects with "Receiving end
+  // does not exist"; that's expected and not an error worth surfacing.
+  await chrome.runtime.sendMessage({ type: "session-ended" }).catch(() => {});
+}
+
+/** True if the group still exists and contains at least one PMS tab. */
+async function groupHasPmsTab(groupId: number): Promise<boolean> {
+  try {
+    const members = await chrome.tabs.query({ groupId });
+    return members.some((member) => isPmsUrl(member.url));
+  } catch {
+    return false;
   }
+}
+
+/**
+ * Ends the session if `groupId` is the active one and no longer has a PMS
+ * tab in it (the group itself may still be open with other tabs). Called
+ * after a tab closes or leaves the group — events that don't by themselves
+ * mean the group is gone, unlike chrome.tabGroups.onRemoved.
+ */
+export async function endSessionIfGroupLostPmsTab(groupId: number): Promise<void> {
+  const stored = await chrome.storage.session.get(SESSION_GROUP_KEY);
+  if (stored[SESSION_GROUP_KEY] !== groupId) return;
+  if (await groupHasPmsTab(groupId)) return;
+  await endSessionIfGroup(groupId);
 }

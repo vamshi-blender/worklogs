@@ -10,6 +10,7 @@
   "dependencies": {
     "@hugeicons/core-free-icons": "^4.2.2",
     "@hugeicons/react": "^1.1.9",
+    "@openai/agents": "^0.13.4",
     "katex": "^0.16.47",
     "mermaid": "^11.16.0",
     "minisearch": "^7.2.0",
@@ -20,7 +21,8 @@
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
-    "remark-math": "^6.0.0"
+    "remark-math": "^6.0.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@crxjs/vite-plugin": "^2.2.0",

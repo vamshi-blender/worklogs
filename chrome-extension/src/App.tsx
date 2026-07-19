@@ -76,6 +76,19 @@ export default function App({ ctx }: AppProps) {
     };
   }, []);
 
+  // The background worker broadcasts this once the session's tab group is
+  // gone (closed, ungrouped, or its PMS tab removed) — there is no longer a
+  // tab group for the extension to operate on, so the surface closes itself.
+  useEffect(() => {
+    function handleMessage(message: unknown) {
+      if ((message as { type?: string } | undefined)?.type === "session-ended") {
+        window.close();
+      }
+    }
+    chrome.runtime.onMessage.addListener(handleMessage);
+    return () => chrome.runtime.onMessage.removeListener(handleMessage);
+  }, []);
+
   if (phase === "authed") return <ChatLayout ctx={ctx} />;
   return <PmsSessionGate mode={phase === "checking" ? "checking" : "gate"} />;
 }

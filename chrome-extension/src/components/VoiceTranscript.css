@@ -1,0 +1,90 @@
+.voice-transcript {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: 0;
+  /* Mask (not a color overlay) fades both edges to transparent, so the fade
+     always matches whatever sits behind it — the card surface in either
+     theme — without needing to track a background color. */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--voice-transcript-fade),
+    #000 calc(100% - var(--voice-transcript-fade)),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--voice-transcript-fade),
+    #000 calc(100% - var(--voice-transcript-fade)),
+    transparent 100%
+  );
+}
+
+.voice-transcript-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  box-sizing: border-box;
+  width: 100%;
+  max-width: min(100%, var(--composer-max-width));
+  height: 100%;
+  margin: 0 auto;
+  padding: var(--voice-transcript-fade) var(--space-5);
+  overflow-y: auto;
+  font-family: var(--font-sans);
+  font-size: var(--text-base-size);
+  line-height: var(--text-base-line);
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* legacy Edge */
+}
+
+.voice-transcript-scroll::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+
+.voice-transcript-line {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Donna's speech reads as settled, primary-colored narration — same weight
+   as a finalized assistant bubble in the main chat. */
+.voice-transcript-line--assistant {
+  color: var(--text-primary);
+  text-align: left;
+}
+
+/* The user's own speech mirrors the main chat's right-aligned user turn,
+   without a bubble — the transcript has no chrome, only alignment and color. */
+.voice-transcript-line--user {
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.voice-transcript-tool {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: fit-content;
+  color: var(--text-secondary);
+}
+
+.voice-transcript-tool-icon {
+  flex: none;
+}
+
+.voice-transcript-tool-name {
+  font-size: var(--text-base-size);
+}
+
+.voice-transcript-tool-name--failed {
+  color: var(--text-danger, var(--text-secondary));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-transcript-scroll {
+    scroll-behavior: auto;
+  }
+}
