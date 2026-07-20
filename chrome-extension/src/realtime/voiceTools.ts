@@ -7,6 +7,69 @@ const serverTimeParameters = z
   .object({ timeZone: z.string().nullable() })
   .strict();
 
+// Hardcoded to match the manifest bundle (same convention as the lookup
+// names below): an enum stops the model from guessing near-miss names.
+const FILTERABLE_FIELDS = [
+  "Application Status",
+  "Leave Type",
+  "Application Id",
+  "Reason",
+  "Application date",
+  "Leave Start Date",
+  "Leave End Date",
+] as const;
+
+const LOOKUP_COLUMNS = [
+  // getLeaveApplicationStatus report columns
+  "Application Id",
+  "Application date",
+  "Application Status",
+  "Leave Type",
+  "Leave Start Date",
+  "Leave End Date",
+  "Number of Days",
+  "Date Range",
+  "Reason",
+  "Employee Name",
+  "Employee Code",
+  "Manager Name",
+  "Manager Email Id",
+  // getLeaveBalance columns
+  "Balance Leaves",
+  "Entitled Leaves",
+  "Optional Balance",
+  "Optional Leaves Track",
+  "Used Leaves",
+  "Used Optional",
+  // getLeaveCalendar columns
+  "Boolean",
+  "Color",
+  "Date",
+  "Name",
+] as const;
+
+const pmsLookupFilterParameters = z
+  .object({
+    field: z
+      .enum(FILTERABLE_FIELDS)
+      .describe(
+        "Filterable field name (getLeaveApplicationStatus only).",
+      ),
+    operator: z
+      .enum(["equals", "contains", "between"])
+      .describe(
+        "equals/contains for text fields; between (inclusive) for date fields.",
+      ),
+    value: z
+      .string()
+      .describe("Filter value; for date fields the range start, YYYY-MM-DD."),
+    secondValue: z
+      .string()
+      .nullable()
+      .describe("Range end (YYYY-MM-DD) for between; null otherwise."),
+  })
+  .strict();
+
 const pmsLookupParameters = z
   .object({
     lookup: z.enum([
@@ -14,6 +77,25 @@ const pmsLookupParameters = z
       "getLeaveCalendar",
       "getLeaveApplicationStatus",
     ]),
+    filters: z
+      .array(pmsLookupFilterParameters)
+      .nullable()
+      .describe(
+        "Server-side filters (getLeaveApplicationStatus only) — filter by status, leave type, dates, or application id instead of fetching everything. null for none.",
+      ),
+    columns: z
+      .array(z.enum(LOOKUP_COLUMNS))
+      .nullable()
+      .describe(
+        "Return only these columns (e.g. Application Id, Application Status). null for all columns.",
+      ),
+    top: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .nullable()
+      .describe("Max rows to return (default 50). null for the default."),
   })
   .strict();
 

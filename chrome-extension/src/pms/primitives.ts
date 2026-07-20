@@ -73,16 +73,31 @@ export async function fetchDatasourceRows(
   return rows.map(rowToObject);
 }
 
+/** One entry of GetGridReportData's `filters` array — verbatim shape from
+ * a captured filtered report call (2026-07-20). Text fields use
+ * Equal/Contains with MappingType "Static"; date ranges use Condition
+ * "Custom" with Quixy-UTC DefaultValue/SecondValue and MappingType "Mapped". */
+export interface QuixyReportFilter {
+  ElementType: "TextBox" | "Date";
+  LabelName: string;
+  Condition: "Equal" | "Contains" | "Custom";
+  Type: "textType";
+  DefaultValue: string;
+  SecondValue: string;
+  MappingType: "Static" | "Mapped";
+}
+
 /** GetGridReportData — rows of a datasource report (read-side screens). */
 export async function fetchReportGrid(
   source: PmsReportGridSource,
+  options?: { filters?: QuixyReportFilter[]; top?: number },
 ): Promise<Record<string, unknown>[]> {
   const data = await postJson("/api/Report/GetGridReportData", {
     reportId: source.reportId,
     skip: 0,
-    top: source.top,
+    top: options?.top ?? source.top,
     orderByFields: source.orderByFields,
-    filters: [],
+    filters: options?.filters ?? [],
     groupAggregate: null,
     isShowGrid: false,
     isChartBasedReportGridCall: false,

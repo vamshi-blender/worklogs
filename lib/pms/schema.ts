@@ -5,7 +5,7 @@
 // truth: the manifest files.
 import { z } from "zod";
 import { getPmsBundle } from "./bundle";
-import type { PmsInputSlot } from "./types";
+import type { PmsInputSlot, PmsLookupSource } from "./types";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -66,6 +66,79 @@ export function capabilitiesCatalog(): unknown {
       .map(([name, lookup]) => ({
         resolverName: name,
         description: lookup.description,
+        ...lookupQueryCapabilities(lookup.source),
       })),
   };
+}
+
+/** Union of filterable field names across queryable lookups. Feeds the
+ * pms_lookup tool's `field` enum so the model cannot emit a name that exists
+ * nowhere (per-lookup membership is still validated by the executor). */
+export function queryableFilterFieldNames(): string[] {
+  const names = new Set<string>();
+  for (const lookup of Object.values(getPmsBundle().lookups)) {
+    if (!lookup.queryable || lookup.source.kind !== "reportGrid") continue;
+    for (const field of lookup.source.filterableFields ?? []) {
+      names.add(field.name);
+    }
+  }
+  return [...names];
+}
+
+/** Union of selectable column names across queryable lookups — same role as
+ * queryableFilterFieldNames, for the `columns` param. */
+export function queryableColumnNames(): string[] {
+  const names = new Set<string>();
+  for (const lookup of Object.values(getPmsBundle().lookups)) {
+    if (!lookup.queryable) continue;
+    for (const column of availableColumnsOf(lookup.source)) names.add(column);
+  }
+  return [...names];
+}
+
+/** One-line per-lookup map for tool descriptions, so the model picks valid
+ * names without a list_pms_capabilities roundtrip. */
+export function lookupQuerySummary(): string {
+  return Object.entries(getPmsBundle().lookups)
+    .filter(([, lookup]) => lookup.queryable)
+    .map(([name, lookup]) => {
+      const fields =
+        lookup.source.kind === "reportGrid"
+          ? (lookup.source.filterableFields ?? []).map((field) => field.name)
+          : [];
+      const columns = availableColumnsOf(lookup.source);
+      const filterPart = fields.length
+        ? `filters: ${fields.join(" | ")}`
+        : "no filters";
+      return `${name} — ${filterPart}; columns: ${columns.join(" | ")}`;
+    })
+    .join(". ");
+}
+
+function availableColumnsOf(source: PmsLookupSource): string[] {
+  switch (source.kind) {
+    case "reportGrid":
+      return source.availableColumns ?? [];
+    case "datasourceRows":
+      return source.outputColumns;
+    default:
+      return source.referencedElements;
+  }
+}
+
+/** What pms_lookup's filters/columns params accept for a given source. */
+function lookupQueryCapabilities(source: PmsLookupSource): {
+  filterableFields: unknown[];
+  columns: string[];
+} {
+  const filterableFields =
+    source.kind === "reportGrid"
+      ? (source.filterableFields ?? []).map((field) => ({
+          field: field.name,
+          type: field.type,
+          operators: field.type === "date" ? ["between"] : ["equals", "contains"],
+          values: field.values ?? null,
+        }))
+      : [];
+  return { filterableFields, columns: availableColumnsOf(source) };
 }

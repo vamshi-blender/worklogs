@@ -38,11 +38,26 @@ export interface PmsDatasourceRowsSource {
   keyRef: string;
 }
 
+/** A report column pms_lookup filters may target. `name` is the exact
+ * LabelName the report's filter API expects (captured from live traffic). */
+export interface PmsReportGridFilterField {
+  name: string;
+  /** text → equals/contains; date → between (YYYY-MM-DD, inclusive). */
+  type: "text" | "date";
+  /** Closed value set, when known (text fields only) — validated on equals. */
+  values?: string[];
+}
+
 export interface PmsReportGridSource {
   kind: "reportGrid"; // POST /api/Report/GetGridReportData
   reportId: string;
   orderByFields: string;
   top: number;
+  /** Columns filters may target; omit → the lookup accepts no filters. */
+  filterableFields?: PmsReportGridFilterField[];
+  /** Exact keys of the rows the report returns; enables `columns`
+   * projection and documents the output shape in the capability catalog. */
+  availableColumns?: string[];
 }
 
 export type PmsLookupSource =
@@ -55,6 +70,28 @@ export interface PmsLookupDefinition {
   /** true → Donna may call it standalone via the pms_lookup tool. */
   queryable: boolean;
   source: PmsLookupSource;
+}
+
+/** One pms_lookup filter. Filters run server-side (reportGrid lookups only);
+ * `field` must name one of the source's filterableFields. */
+export interface PmsLookupFilter {
+  field: string;
+  /** equals/contains for text fields; between for date fields. */
+  operator: "equals" | "contains" | "between";
+  /** Text value, or range start (YYYY-MM-DD) for between. */
+  value: string;
+  /** Range end (YYYY-MM-DD) for between; omit to filter a single day. */
+  secondValue?: string;
+}
+
+/** Optional per-call query options on pms_lookup. Column projection is
+ * applied in the extension before rows reach the model, so it saves context
+ * tokens on every lookup kind; filters additionally save the fetch itself. */
+export interface PmsLookupQuery {
+  filters?: PmsLookupFilter[];
+  columns?: string[];
+  /** Max rows to return (default and hard cap: the executor's row cap). */
+  top?: number;
 }
 
 export interface PmsInputSlot {

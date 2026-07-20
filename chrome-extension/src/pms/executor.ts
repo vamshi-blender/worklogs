@@ -21,11 +21,15 @@ import {
   fetchNextSerialNumber,
   fetchReportGrid,
   saveAppData,
+  type QuixyReportFilter,
 } from "./primitives";
 import type {
   PmsActionManifest,
   PmsBundle,
+  PmsLookupFilter,
+  PmsLookupQuery,
   PmsLookupSource,
+  PmsReportGridSource,
   PmsRule,
   PmsValueSpec,
 } from "./types";
@@ -74,15 +78,136 @@ async function buildUserContext(): Promise<Record<string, string>> {
   };
 }
 
+const TEXT_CONDITIONS: Record<string, "Equal" | "Contains"> = {
+  equals: "Equal",
+  contains: "Contains",
+};
+
+/** Validate pms_lookup filters against the manifest's filterableFields and
+ * translate them into the report API's wire shape. Errors are phrased so
+ * Donna can correct the call (or the user) rather than retry blindly. */
+function buildReportFilters(
+  source: PmsReportGridSource,
+  filters: PmsLookupFilter[],
+): QuixyReportFilter[] {
+  const fields = source.filterableFields ?? [];
+  if (fields.length === 0) {
+    throw new Error("This lookup does not support filters.");
+  }
+  const fieldNames = fields.map((field) => field.name).join(", ");
+
+  return filters.map((filter) => {
+    const field = fields.find((candidate) => candidate.name === filter.field);
+    if (!field) {
+      throw new Error(
+        `"${filter.field}" is not a filterable field. Available: ${fieldNames}.`,
+      );
+    }
+
+    if (field.type === "date") {
+      if (filter.operator !== "between") {
+        throw new Error(
+          `"${field.name}" is a date field — use operator "between" with YYYY-MM-DD value (and optional secondValue).`,
+        );
+      }
+      const from = parseInputDate(filter.value);
+      const to = parseInputDate(filter.secondValue ?? filter.value);
+      if (rawDayCount(from, to) < 1) {
+        throw new Error(
+          `The "${field.name}" range ends before it starts.`,
+        );
+      }
+      return {
+        ElementType: "Date",
+        LabelName: field.name,
+        Condition: "Custom",
+        Type: "textType",
+        DefaultValue: quixyUtcDate(from),
+        SecondValue: quixyUtcDate(to),
+        MappingType: "Mapped",
+      } satisfies QuixyReportFilter;
+    }
+
+    const condition = TEXT_CONDITIONS[filter.operator];
+    if (!condition) {
+      throw new Error(
+        `"${field.name}" is a text field — use operator "equals" or "contains".`,
+      );
+    }
+    if (
+      filter.operator === "equals" &&
+      field.values &&
+      !field.values.includes(filter.value)
+    ) {
+      throw new Error(
+        `"${filter.value}" is not a valid ${field.name}. Valid values: ${field.values.join(", ")}.`,
+      );
+    }
+    return {
+      ElementType: "TextBox",
+      LabelName: field.name,
+      Condition: condition,
+      Type: "textType",
+      DefaultValue: filter.value,
+      SecondValue: "",
+      MappingType: "Static",
+    } satisfies QuixyReportFilter;
+  });
+}
+
+/** Keep only the requested columns, validating names against the columns
+ * this source is known to return. */
+function projectColumns<T extends Record<string, unknown>>(
+  row: T,
+  columns: string[],
+): Record<string, unknown> {
+  const projected: Record<string, unknown> = {};
+  for (const column of columns) projected[column] = row[column];
+  return projected;
+}
+
+function validateColumns(columns: string[], available: string[]): void {
+  if (available.length === 0) {
+    throw new Error("This lookup does not support column selection.");
+  }
+  const unknown = columns.filter((column) => !available.includes(column));
+  if (unknown.length > 0) {
+    throw new Error(
+      `Unknown column(s): ${unknown.join(", ")}. Available: ${available.join(", ")}.`,
+    );
+  }
+}
+
+function availableColumnsOf(source: PmsLookupSource): string[] {
+  if (source.kind === "reportGrid") return source.availableColumns ?? [];
+  if (source.kind === "datasourceRows") return source.outputColumns;
+  return source.referencedElements;
+}
+
 async function runLookupSource(
   source: PmsLookupSource,
   context: ExecutionContext,
+  query?: PmsLookupQuery,
 ): Promise<unknown> {
+  const columns = query?.columns;
+  if (columns && columns.length > 0) {
+    validateColumns(columns, availableColumnsOf(source));
+  }
+  if (query?.filters?.length && source.kind !== "reportGrid") {
+    throw new Error("This lookup does not support filters.");
+  }
+  const rowCap = Math.min(query?.top ?? MAX_LOOKUP_ROWS, MAX_LOOKUP_ROWS);
+
   if (source.kind === "reportGrid") {
-    const rows = await fetchReportGrid(source);
+    const filters = query?.filters?.length
+      ? buildReportFilters(source, query.filters)
+      : undefined;
+    const rows = await fetchReportGrid(source, { filters });
     return {
-      rows: rows.slice(0, MAX_LOOKUP_ROWS),
-      truncated: rows.length > MAX_LOOKUP_ROWS,
+      rows: rows
+        .slice(0, rowCap)
+        .map((row) => (columns?.length ? projectColumns(row, columns) : row)),
+      truncated: rows.length > rowCap,
     };
   }
 
@@ -92,25 +217,31 @@ async function runLookupSource(
   }
 
   if (source.kind === "dataTableRow") {
-    return fetchDataTableRow(source, keyValue);
+    const record = await fetchDataTableRow(source, keyValue);
+    return columns?.length ? projectColumns(record, columns) : record;
   }
 
   const rows = await fetchDatasourceRows(source, keyValue);
   return {
-    rows: rows.slice(0, MAX_LOOKUP_ROWS),
-    truncated: rows.length > MAX_LOOKUP_ROWS,
+    rows: rows
+      .slice(0, rowCap)
+      .map((row) => (columns?.length ? projectColumns(row, columns) : row)),
+    truncated: rows.length > rowCap,
   };
 }
 
 /** Standalone lookup — the pms_lookup tool's implementation. */
-export async function runPmsLookup(lookupName: string): Promise<unknown> {
+export async function runPmsLookup(
+  lookupName: string,
+  query?: PmsLookupQuery,
+): Promise<unknown> {
   const bundle = await getPmsBundle();
   const lookup = bundle.lookups[lookupName];
   if (!lookup || !lookup.queryable) {
     throw new Error(`"${lookupName}" is not an available PMS lookup.`);
   }
   const context: ExecutionContext = { user: await buildUserContext() };
-  return runLookupSource(lookup.source, context);
+  return runLookupSource(lookup.source, context, query);
 }
 
 // ---------------------------------------------------------------------------

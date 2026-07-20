@@ -69,13 +69,64 @@ export const leaveLookups: Record<string, PmsLookupDefinition> = {
   },
   getLeaveApplicationStatus: {
     description:
-      "The employee's submitted leave applications with their current workflow status (Submitted / approved / rejected), dates, and approving manager.",
+      "The employee's submitted leave applications with their current workflow status (Submitted / approved / rejected), dates, and approving manager. Supports server-side filters (status, leave type, application id, dates) and column projection — filter and project instead of fetching everything.",
     queryable: true,
     source: {
       kind: "reportGrid",
       reportId: "05072022-184910475-87bc6d9c-055c-42a0-9823-2f5e03cbe36a",
       orderByFields: "Application date desc",
       top: 50,
+      // Field names, types and the status value set are verbatim from the
+      // report's filter panel + a captured filtered GetGridReportData call
+      // (2026-07-20). Only field types verified live (text Equal/Contains,
+      // date Custom range) are exposed.
+      filterableFields: [
+        {
+          name: "Application Status",
+          type: "text",
+          values: [
+            "Approved",
+            "CANCELLED",
+            "HR ACCEPTANCE PENDING",
+            "HR ACCEPTED",
+            "HR Rejected",
+            "HR REJECTED",
+            "HR Resubmitted",
+            "MANAGER APPROVAL PENDING",
+            "Manager Rejected",
+            "MANAGER REJECTED",
+            "Manager Resubmitted",
+            "Recommended",
+            "Submitted",
+          ],
+        },
+        {
+          name: "Leave Type",
+          type: "text",
+          values: ["PL", "LOP", "Optional Leave"],
+        },
+        { name: "Application Id", type: "text" },
+        { name: "Reason", type: "text" },
+        { name: "Application date", type: "date" },
+        { name: "Leave Start Date", type: "date" },
+        { name: "Leave End Date", type: "date" },
+      ],
+      // Exact row keys of the report's JSON output (captured live).
+      availableColumns: [
+        "Application Id",
+        "Application date",
+        "Application Status",
+        "Leave Type",
+        "Leave Start Date",
+        "Leave End Date",
+        "Number of Days",
+        "Date Range",
+        "Reason",
+        "Employee Name",
+        "Employee Code",
+        "Manager Name",
+        "Manager Email Id",
+      ],
     },
   },
 };

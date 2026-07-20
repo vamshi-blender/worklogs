@@ -1,7 +1,13 @@
 import { Agent, tool } from "@openai/agents";
 import { z } from "zod";
 import { actionNames, getPmsBundle, queryableLookupNames } from "../pms/bundle";
-import { actionFieldsShape, capabilitiesCatalog } from "../pms/schema";
+import {
+  actionFieldsShape,
+  capabilitiesCatalog,
+  lookupQuerySummary,
+  queryableColumnNames,
+  queryableFilterFieldNames,
+} from "../pms/schema";
 import { CONFIRM_LABELS } from "./protocol";
 import { getServerTimeResult } from "./server-time";
 
@@ -115,18 +121,70 @@ function relayClientResult(
   return JSON.stringify(result.data);
 }
 
+// Field/column names are enums generated from the manifest bundle, so the
+// model cannot invent a name that exists nowhere; which names belong to
+// which lookup is documented in the descriptions and re-validated by the
+// extension executor. Fall back to plain strings if a future bundle has no
+// queryable names (z.enum requires a non-empty list).
+function nameEnum(names: string[]): z.ZodTypeAny {
+  return names.length ? z.enum(names as [string, ...string[]]) : z.string();
+}
+
+const pmsLookupFilterParameters = z
+  .object({
+    field: nameEnum(queryableFilterFieldNames()).describe(
+      "Filterable field name (exact). Which fields belong to which lookup is listed in the filters parameter description.",
+    ),
+    operator: z
+      .enum(["equals", "contains", "between"])
+      .describe(
+        "equals/contains for text fields; between (inclusive) for date fields.",
+      ),
+    value: z
+      .string()
+      .describe(
+        "Filter value. For date fields: the range start as YYYY-MM-DD.",
+      ),
+    secondValue: z
+      .string()
+      .nullable()
+      .describe(
+        "Range end (YYYY-MM-DD) for between; null otherwise (a single-day between may pass null).",
+      ),
+  })
+  .strict();
+
 const pmsLookupParameters = z
   .object({
     lookup: z
       .enum(queryableLookupNames() as [string, ...string[]])
       .describe("Which PMS lookup to run."),
+    filters: z
+      .array(pmsLookupFilterParameters)
+      .nullable()
+      .describe(
+        `Server-side filters (AND-combined). Strongly prefer filtering over fetching everything when the user asks about specific statuses, leave types, dates, or one application id. null when no filtering is needed. Per lookup: ${lookupQuerySummary()}`,
+      ),
+    columns: z
+      .array(nameEnum(queryableColumnNames()))
+      .nullable()
+      .describe(
+        "Return only these columns (exact names; each lookup's columns are listed in the filters parameter description). Prefer the few columns that answer the question; null returns all columns.",
+      ),
+    top: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .nullable()
+      .describe("Max rows to return (default 50). null for the default."),
   })
   .strict();
 
 const pmsLookup = tool<typeof pmsLookupParameters, DonnaRunContext, string>({
   name: "pms_lookup",
   description:
-    "Read live data from the PMS with the user's session: leave balances, existing leave days, or leave application statuses. Runs silently in the extension; use it freely to answer PMS data questions. Never invent PMS data instead of calling this.",
+    "Read live data from the PMS with the user's session: leave balances, existing leave days, or leave application statuses. Runs silently in the extension; use it freely to answer PMS data questions. Never invent PMS data instead of calling this. Supports filters, column selection, and a row limit — narrow the result to what the question needs instead of fetching whole datasets.",
   parameters: pmsLookupParameters,
   // Client tools always "need approval" — the pause/resume roundtrip is how
   // execution reaches the extension. The extension auto-approves this one
@@ -203,6 +261,7 @@ Use get_current_page_context only when the user's request depends on the active 
 
 PMS (the user's Quixy project-management system):
 Use pms_lookup for read-only PMS questions (leave balance, existing leave days, application statuses). It runs silently with the user's session; call it directly instead of asking the user for data it can fetch. Resolve relative dates with get_server_time first.
+When a lookup can return many rows, pass filters (by status, leave type, dates, or application id) and columns so only the data the question needs is fetched — check list_pms_capabilities for each lookup's filterable fields, valid values, and column names.
 Use list_pms_capabilities when the user asks what PMS actions you support, or to check an action's fields and rules before collecting them.
 For PMS actions (submit_pms_action): collect the user-facing fields conversationally. Check the business rules from list_pms_capabilities early and tell the user immediately if their request violates one (for example leave ranges crossing a calendar month or ending after the 25th) instead of collecting the rest of the fields first.
 Submitting: once all required fields are collected, call submit_pms_action directly — do NOT ask for verbal or typed confirmation first. The extension shows the user an approval card with the action details before anything executes; that card is the one and only confirmation step, and declining it cancels the submission. Put the key details (leave type, dates, days, reason) in the approvalDescription so the card is self-explanatory. Set acknowledgment to true; the user's approval on the card is the acknowledgment. Dates are YYYY-MM-DD.
