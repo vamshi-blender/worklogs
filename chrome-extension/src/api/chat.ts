@@ -1,4 +1,5 @@
 import { getBackendUrl } from "./backend";
+import { getPmsAccessToken } from "./pmsAuth";
 import { isChatStreamEvent, type ChatStreamEvent } from "./protocol";
 
 interface StreamRequestOptions {
@@ -25,9 +26,13 @@ async function streamRequest({
   onEvent,
 }: StreamRequestOptions): Promise<void> {
   const backendUrl = await getBackendUrl();
+  const pmsAccessToken = await getPmsAccessToken();
   const response = await fetch(`${backendUrl}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${pmsAccessToken}`,
+    },
     body: JSON.stringify(body),
     signal,
   });

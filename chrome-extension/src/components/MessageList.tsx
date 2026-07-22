@@ -555,7 +555,7 @@ function MarkdownMessage({ content, renderMermaid = true }: MarkdownMessageProps
             return <pre>{children}</pre>;
           },
           table: ({ children }) => (
-            <div className="message-markdown-table-wrap">
+            <div className="message-markdown-table-wrap thin-scrollbar">
               <table>{children}</table>
             </div>
           ),

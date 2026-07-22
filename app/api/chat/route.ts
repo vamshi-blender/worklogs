@@ -1,7 +1,17 @@
 import { z } from "zod";
 import OpenAI from "openai";
+import { after } from "next/server";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
 import { streamDonnaRun } from "@/lib/agents/stream-run";
+import {
+  loadRelevantUserMemories,
+  processCompletedDonnaTurn,
+} from "@/lib/memory/context";
+import type { DonnaRunSummary } from "@/lib/memory/types";
+import {
+  authenticateDonnaRequest,
+  PmsAuthenticationError,
+} from "@/lib/pms/server-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,9 +25,13 @@ const chatRequestSchema = z
 
 function unavailableReason(): string | null {
   if (!process.env.OPENAI_API_KEY) return "OPENAI_API_KEY is not configured.";
-  // SECURITY: the ENABLE_PRODUCTION_CHAT production kill-switch was removed
-  // here (dev-phase decision; see this commit). Restore it together with
-  // authentication and rate limiting before locking production down again.
+  if (!process.env.SUPABASE_URL) return "SUPABASE_URL is not configured.";
+  if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    return "SUPABASE_SERVICE_ROLE_KEY is not configured.";
+  }
+  if (!process.env.MEM0_API_KEY) return "MEM0_API_KEY is not configured.";
+  // SECURITY: PMS authentication now protects chat. Add rate limiting before
+  // opening the production endpoint to a larger user population.
   return null;
 }
 
@@ -59,6 +73,23 @@ export async function POST(request: Request) {
     );
   }
 
+  let identity;
+  try {
+    identity = await authenticateDonnaRequest(request);
+  } catch (error) {
+    if (error instanceof PmsAuthenticationError) {
+      return Response.json(
+        { error: error.message },
+        { status: error.status, headers: corsHeaders(origin) },
+      );
+    }
+    console.error("Failed to resolve the authenticated Donna identity", error);
+    return Response.json(
+      { error: "Donna could not identify the current user. Please try again." },
+      { status: 502, headers: corsHeaders(origin) },
+    );
+  }
+
   let conversationId = parsed.data.conversationId;
   if (!conversationId) {
     try {
@@ -77,10 +108,53 @@ export async function POST(request: Request) {
     }
   }
 
+  const relevantMemories = await loadRelevantUserMemories(
+    identity,
+    parsed.data.message,
+  );
+  const context = {
+    clientToolResults: {},
+    identity,
+    relevantMemories,
+    pmsObservations: [],
+    resolvedPmsValues: [],
+  };
+  const memoryCapture = {
+    tenantId: identity.tenantId,
+    userId: String(identity.identityId),
+    conversationId,
+    userMessage: parsed.data.message,
+    turnId: crypto.randomUUID(),
+  };
+
+  type RunSettlement = {
+    outcome: "completed" | "paused" | "failed";
+    summary: DonnaRunSummary;
+  };
+  let settleRun!: (settlement: RunSettlement) => void;
+  const settledRun = new Promise<RunSettlement>(
+    (resolve) => {
+      settleRun = resolve;
+    },
+  );
+  after(async () => {
+    const settlement = await settledRun;
+    if (settlement.outcome === "completed") {
+      await processCompletedDonnaTurn({
+        identity,
+        capture: memoryCapture,
+        summary: settlement.summary,
+      });
+    }
+  });
+
   const stream = streamDonnaRun({
     input: parsed.data.message,
     conversationId,
     signal: request.signal,
+    context,
+    memoryCapture,
+    onSettled: (outcome, summary) => settleRun({ outcome, summary }),
   });
 
   return new Response(stream, {

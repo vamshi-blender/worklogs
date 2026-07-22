@@ -48,8 +48,35 @@ function conversationContext(messages: ChatMessage[]): string {
     : "";
 }
 
-function historyToTurns(history: RealtimeItem[]): VoiceTranscriptTurn[] {
+function upsertAssistantTurn(
+  turns: VoiceTranscriptTurn[],
+  itemId: string,
+  text: string,
+): VoiceTranscriptTurn[] {
+  const normalizedText = text.trim();
+  if (!normalizedText) return turns;
+
+  const index = turns.findIndex(
+    (turn) => turn.kind === "assistant" && turn.id === itemId,
+  );
+  if (index === -1) {
+    return [...turns, { id: itemId, kind: "assistant", text: normalizedText }];
+  }
+  if (turns[index].kind === "assistant" && turns[index].text === normalizedText) {
+    return turns;
+  }
+
+  const next = [...turns];
+  next[index] = { id: itemId, kind: "assistant", text: normalizedText };
+  return next;
+}
+
+function historyToTurns(
+  history: RealtimeItem[],
+  partialAssistantTranscripts: ReadonlyMap<string, string>,
+): VoiceTranscriptTurn[] {
   const turns: VoiceTranscriptTurn[] = [];
+  const includedAssistantIds = new Set<string>();
 
   for (const item of history) {
     if (item.type === "message" && item.role === "user") {
@@ -70,12 +97,17 @@ function historyToTurns(history: RealtimeItem[]): VoiceTranscriptTurn[] {
     }
 
     if (item.type === "message" && item.role === "assistant") {
-      const text = item.content
+      const finalizedText = item.content
         .map((content) =>
           content.type === "output_audio" ? content.transcript ?? "" : content.text,
         )
         .join(" ")
         .trim();
+      const text =
+        item.status === "in_progress"
+          ? partialAssistantTranscripts.get(item.itemId)?.trim() || finalizedText
+          : finalizedText;
+      includedAssistantIds.add(item.itemId);
       if (text) turns.push({ id: item.itemId, kind: "assistant", text });
       continue;
     }
@@ -96,6 +128,15 @@ function historyToTurns(history: RealtimeItem[]): VoiceTranscriptTurn[] {
               ? "failed"
               : "running",
       });
+    }
+  }
+
+  // Deltas can arrive just before the SDK adds the corresponding message to
+  // its normalized history. Show those captions immediately instead of
+  // waiting for the next history update.
+  for (const [itemId, text] of partialAssistantTranscripts) {
+    if (!includedAssistantIds.has(itemId) && text.trim()) {
+      turns.push({ id: itemId, kind: "assistant", text: text.trim() });
     }
   }
 
@@ -125,6 +166,7 @@ export function useVoiceSession(
   const speakingRef = useRef(false);
   const activePlaybackResponseRef = useRef<string | null>(null);
   const activeToolCountRef = useRef(0);
+  const partialAssistantTranscriptsRef = useRef(new Map<string, string>());
   const endRequestedRef = useRef(false);
   const endFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onEndRequestedRef = useRef(onEndRequested);
@@ -258,6 +300,7 @@ export function useVoiceSession(
     speakingRef.current = false;
     activePlaybackResponseRef.current = null;
     activeToolCountRef.current = 0;
+    partialAssistantTranscriptsRef.current.clear();
     endRequestedRef.current = false;
     if (endFallbackTimerRef.current !== null) {
       clearTimeout(endFallbackTimerRef.current);
@@ -371,7 +414,20 @@ export function useVoiceSession(
         setStatus("listening");
       };
 
-      session.on("history_updated", (history) => setTurns(historyToTurns(history)));
+      session.on("history_updated", (history) => {
+        const partialTranscripts = partialAssistantTranscriptsRef.current;
+        setTurns(historyToTurns(history, partialTranscripts));
+
+        for (const item of history) {
+          if (
+            item.type === "message" &&
+            item.role === "assistant" &&
+            item.status !== "in_progress"
+          ) {
+            partialTranscripts.delete(item.itemId);
+          }
+        }
+      });
       session.on("agent_start", () => {
         if (!speakingRef.current && activeToolCountRef.current === 0) {
           setStatus("thinking");
@@ -396,6 +452,20 @@ export function useVoiceSession(
       // Use the output buffer lifecycle: `stopped` means the buffer is fully
       // drained; `cleared` or input speech while speaking means interruption.
       session.on("transport_event", (event) => {
+        if (event.type === "response.output_audio_transcript.delta") {
+          const partialTranscripts = partialAssistantTranscriptsRef.current;
+          const transcript = (partialTranscripts.get(event.item_id) ?? "") + event.delta;
+          partialTranscripts.set(event.item_id, transcript);
+          setTurns((current) => upsertAssistantTurn(current, event.item_id, transcript));
+          return;
+        }
+        if (event.type === "response.output_audio_transcript.done") {
+          partialAssistantTranscriptsRef.current.set(event.item_id, event.transcript);
+          setTurns((current) =>
+            upsertAssistantTurn(current, event.item_id, event.transcript),
+          );
+          return;
+        }
         if (event.type === "output_audio_buffer.started") {
           markSpeaking(typeof event.response_id === "string" ? event.response_id : undefined);
           return;

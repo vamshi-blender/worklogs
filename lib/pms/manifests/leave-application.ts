@@ -105,7 +105,11 @@ export const leaveLookups: Record<string, PmsLookupDefinition> = {
           type: "text",
           values: ["PL", "LOP", "Optional Leave"],
         },
-        { name: "Application Id", type: "text" },
+        {
+          name: "Application Id",
+          type: "text",
+          requiresValueResolution: true,
+        },
         { name: "Reason", type: "text" },
         { name: "Application date", type: "date" },
         { name: "Leave Start Date", type: "date" },

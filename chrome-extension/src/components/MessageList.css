@@ -386,6 +386,8 @@
   font-size: 0.9em;
 }
 
+/* Thumb-only scrollbar styling for this element comes from the shared
+   .thin-scrollbar class (base.css) — added where this wrapper is rendered. */
 .message-markdown-table-wrap {
   max-width: 100%;
   overflow-x: auto;

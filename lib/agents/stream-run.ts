@@ -8,6 +8,7 @@ import {
   type RunToolApprovalItem,
 } from "@openai/agents";
 import { donnaAgent, type DonnaRunContext } from "./donna";
+import type { DonnaRunSummary } from "@/lib/memory/types";
 import { savePendingRun } from "./pending-runs";
 import {
   CONFIRM_LABELS,
@@ -32,11 +33,19 @@ const PRIVATE_TOOL_ARGUMENTS = new Set([
 ]);
 const TOOL_ARGUMENT_STRING_LIMIT = 800;
 const TOOL_OUTPUT_PREVIEW_LIMIT = 1_200;
+const LEARNING_TOOL_OUTPUT_LIMIT = 6_000;
+const LEARNING_ASSISTANT_TEXT_LIMIT = 6_000;
 
 interface StreamDonnaRunOptions {
   input: string | RunState<DonnaRunContext, typeof donnaAgent>;
   conversationId: string;
   signal: AbortSignal;
+  context: DonnaRunContext;
+  memoryCapture: import("@/lib/memory/types").MemoryCapture;
+  onSettled?: (
+    outcome: "completed" | "paused" | "failed",
+    summary: DonnaRunSummary,
+  ) => void;
 }
 
 interface TextSegment {
@@ -97,7 +106,7 @@ function toolCallPresentation(item: RunToolCallItem): {
   };
 }
 
-function toolOutputPreview(item: RunToolCallOutputItem): string | undefined {
+function toolOutputText(item: RunToolCallOutputItem): string | undefined {
   let output: string;
   try {
     output =
@@ -108,9 +117,13 @@ function toolOutputPreview(item: RunToolCallOutputItem): string | undefined {
     return undefined;
   }
 
+  return output || undefined;
+}
+
+function toolOutputPreview(output: string | undefined): string | undefined {
   if (!output) return undefined;
   return output.length > TOOL_OUTPUT_PREVIEW_LIMIT
-    ? `${output.slice(0, TOOL_OUTPUT_PREVIEW_LIMIT)}…`
+    ? `${output.slice(0, TOOL_OUTPUT_PREVIEW_LIMIT)}...`
     : output;
 }
 
@@ -195,6 +208,9 @@ export function streamDonnaRun({
   input,
   conversationId,
   signal,
+  context,
+  memoryCapture,
+  onSettled,
 }: StreamDonnaRunOptions): ReadableStream<Uint8Array> {
   const abortController = new AbortController();
   const abort = () => abortController.abort();
@@ -202,6 +218,10 @@ export function streamDonnaRun({
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
+      let outcome: "completed" | "paused" | "failed" = "failed";
+      let assistantText = "";
+      const pmsObservations =
+        context.pmsObservations ?? (context.pmsObservations = []);
       const send = (event: ChatStreamEvent) => controller.enqueue(encodeEvent(event));
       send({
         type: "response.started",
@@ -215,10 +235,11 @@ export function streamDonnaRun({
           stream: true,
           signal: abortController.signal,
           maxTurns: 8,
+          toolExecution: { preApprovalInputGuardrails: true },
           ...(isResumedRun
             ? {}
             : {
-                context: { clientToolResults: {} },
+                context,
                 conversationId,
               }),
         });
@@ -270,6 +291,18 @@ export function streamDonnaRun({
           ) {
             const toolCall = toolCallPresentation(event.item);
             if (toolCall) {
+              if (
+                toolCall.name === "pms_lookup" &&
+                !pmsObservations.some(
+                  (observation) => observation.callId === toolCall.callId,
+                )
+              ) {
+                pmsObservations.push({
+                  callId: toolCall.callId,
+                  name: "pms_lookup",
+                  arguments: toolCall.arguments,
+                });
+              }
               send({
                 type: "tool.started",
                 ...toolCall,
@@ -286,7 +319,14 @@ export function streamDonnaRun({
           ) {
             const callId = event.item.callId;
             if (callId) {
-              const output = toolOutputPreview(event.item);
+              const fullOutput = toolOutputText(event.item);
+              const observation = pmsObservations.find(
+                (candidate) => candidate.callId === callId,
+              );
+              if (observation && fullOutput) {
+                observation.output = fullOutput.slice(0, LEARNING_TOOL_OUTPUT_LIMIT);
+              }
+              const output = toolOutputPreview(fullOutput);
               send({
                 type: "tool.completed",
                 callId,
@@ -302,6 +342,13 @@ export function streamDonnaRun({
             event.data.type === "output_text_delta"
           ) {
             if (!event.data.delta) continue;
+
+            if (assistantText.length < LEARNING_ASSISTANT_TEXT_LIMIT) {
+              assistantText = `${assistantText}${event.data.delta}`.slice(
+                0,
+                LEARNING_ASSISTANT_TEXT_LIMIT,
+              );
+            }
 
             const outputIndex = event.data.providerData?.output_index;
             const segment =
@@ -333,6 +380,8 @@ export function streamDonnaRun({
             toolCallId: approval.toolCallId,
             toolName: approval.name,
             executor: approval.executor,
+            context,
+            memoryCapture,
           });
 
           send({
@@ -346,6 +395,7 @@ export function streamDonnaRun({
             requiresApproval: true,
           });
           send({ type: "response.paused", runId, pausedAt: Date.now() });
+          outcome = "paused";
           return;
         }
 
@@ -364,12 +414,17 @@ export function streamDonnaRun({
           type: "response.completed",
           conversationId,
         });
+        outcome = "completed";
       } catch (error) {
         if (!abortController.signal.aborted) {
           console.error("Donna agent run failed", error);
           send(publicError(error));
         }
       } finally {
+        onSettled?.(outcome, {
+          assistantText,
+          pmsObservations: [...pmsObservations],
+        });
         signal.removeEventListener("abort", abort);
         controller.close();
       }

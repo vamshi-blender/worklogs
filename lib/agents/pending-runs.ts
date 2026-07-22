@@ -1,4 +1,6 @@
 import type { ToolExecutor } from "./protocol";
+import type { DonnaRunContext } from "./donna";
+import type { MemoryCapture } from "@/lib/memory/types";
 
 const PENDING_RUN_TTL_MS = 10 * 60 * 1000;
 
@@ -8,6 +10,8 @@ export interface PendingRun {
   toolCallId: string;
   toolName: string;
   executor: ToolExecutor;
+  context: DonnaRunContext;
+  memoryCapture: MemoryCapture;
   createdAt: number;
 }
 

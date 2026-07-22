@@ -1,8 +1,15 @@
 import { z } from "zod";
+import { after } from "next/server";
 import { corsHeaders, getAllowedOrigin } from "@/lib/http/cors";
 import type { ClientToolResult } from "@/lib/agents/donna";
 import { takePendingRun } from "@/lib/agents/pending-runs";
 import { restoreRunState, streamDonnaRun } from "@/lib/agents/stream-run";
+import { processCompletedDonnaTurn } from "@/lib/memory/context";
+import type { DonnaRunSummary } from "@/lib/memory/types";
+import {
+  authenticateDonnaRequest,
+  PmsAuthenticationError,
+} from "@/lib/pms/server-auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,8 +38,8 @@ export async function POST(request: Request) {
     return Response.json({ error: "Origin is not allowed." }, { status: 403 });
   }
 
-  // SECURITY: the ENABLE_PRODUCTION_CHAT production kill-switch was removed
-  // here (dev-phase decision; see this commit).
+  // PMS authentication below also prevents one user from resuming another
+  // user's interrupted tool call.
   let body: unknown;
   try {
     body = await request.json();
@@ -51,11 +58,38 @@ export async function POST(request: Request) {
     );
   }
 
+  let identity;
+  try {
+    identity = await authenticateDonnaRequest(request);
+  } catch (error) {
+    if (error instanceof PmsAuthenticationError) {
+      return Response.json(
+        { error: error.message },
+        { status: error.status, headers: corsHeaders(origin) },
+      );
+    }
+    console.error("Failed to resolve the authenticated Donna identity", error);
+    return Response.json(
+      { error: "Donna could not identify the current user. Please try again." },
+      { status: 502, headers: corsHeaders(origin) },
+    );
+  }
+
   const pending = takePendingRun(parsed.data.runId);
   if (!pending || pending.toolCallId !== parsed.data.toolCallId) {
     return Response.json(
       { error: "This tool request expired or was already handled." },
       { status: 410, headers: corsHeaders(origin) },
+    );
+  }
+
+  if (
+    pending.context.identity.tenantId !== identity.tenantId ||
+    pending.context.identity.identityId !== identity.identityId
+  ) {
+    return Response.json(
+      { error: "This tool request belongs to a different PMS user." },
+      { status: 403, headers: corsHeaders(origin) },
     );
   }
 
@@ -81,9 +115,12 @@ export async function POST(request: Request) {
     clientToolResults[pending.toolCallId] = clientResult;
   }
 
-  const state = await restoreRunState(pending.serializedState, {
+  const context = {
+    ...pending.context,
+    identity,
     clientToolResults,
-  });
+  };
+  const state = await restoreRunState(pending.serializedState, context);
   const interruption = state
     .getInterruptions()
     .find(
@@ -113,10 +150,34 @@ export async function POST(request: Request) {
     });
   }
 
+  type RunSettlement = {
+    outcome: "completed" | "paused" | "failed";
+    summary: DonnaRunSummary;
+  };
+  let settleRun!: (settlement: RunSettlement) => void;
+  const settledRun = new Promise<RunSettlement>(
+    (resolve) => {
+      settleRun = resolve;
+    },
+  );
+  after(async () => {
+    const settlement = await settledRun;
+    if (settlement.outcome === "completed") {
+      await processCompletedDonnaTurn({
+        identity,
+        capture: pending.memoryCapture,
+        summary: settlement.summary,
+      });
+    }
+  });
+
   const stream = streamDonnaRun({
     input: state,
     conversationId: pending.conversationId,
     signal: request.signal,
+    context,
+    memoryCapture: pending.memoryCapture,
+    onSettled: (outcome, summary) => settleRun({ outcome, summary }),
   });
 
   return new Response(stream, {

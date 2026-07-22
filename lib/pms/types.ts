@@ -46,6 +46,9 @@ export interface PmsReportGridFilterField {
   type: "text" | "date";
   /** Closed value set, when known (text fields only) — validated on equals. */
   values?: string[];
+  /** The agent must run shared terminology/value-format resolution before
+   * using this field in a lookup. */
+  requiresValueResolution?: boolean;
 }
 
 export interface PmsReportGridSource {

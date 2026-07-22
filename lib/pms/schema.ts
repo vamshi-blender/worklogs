@@ -85,6 +85,22 @@ export function queryableFilterFieldNames(): string[] {
   return [...names];
 }
 
+/** Whether an agent must resolve a user-facing value before filtering this
+ * field. This is enforced by a tool input guardrail, not only by prompting. */
+export function requiresPmsValueResolution(
+  lookupName: string,
+  fieldName: string,
+): boolean {
+  const lookup = getPmsBundle().lookups[lookupName];
+  if (!lookup?.queryable || lookup.source.kind !== "reportGrid") return false;
+  return Boolean(
+    lookup.source.filterableFields?.some(
+      (field) =>
+        field.name === fieldName && field.requiresValueResolution === true,
+    ),
+  );
+}
+
 /** Union of selectable column names across queryable lookups — same role as
  * queryableFilterFieldNames, for the `columns` param. */
 export function queryableColumnNames(): string[] {
